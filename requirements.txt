@@ -1,10 +1,13 @@
-# GameVault UCN — dependencias congeladas con 'pip freeze' dentro de .venv
-# Se amplia fase a fase; no instalar paquetes sueltos sin volver a congelar.
+# GameVault UCN — dependencias de runtime, congeladas con 'pip freeze' desde
+# .venv (solo los paquetes que la aplicacion realmente importa). Se amplia
+# fase a fase; no instalar paquetes sueltos sin volver a congelar.
+# Herramientas de desarrollo (ruff, pre-commit) viven en requirements-dev.txt.
 
 alembic==1.19.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.14.2
+bcrypt==5.0.0
 click==8.5.0
 fastapi==0.141.1
 greenlet==3.5.5
