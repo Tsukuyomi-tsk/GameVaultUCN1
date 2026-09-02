@@ -1,0 +1,15 @@
+# GameVault UCN — herramientas de desarrollo (lint, formato, hooks de git).
+# No necesarias para levantar el backend, solo para contribuir: la extension
+# de VS Code y el hook de pre-commit ya traen su propio binario de Ruff, asi
+# que esto es opcional. Instalar con: pip install -r requirements-dev.txt
+
+cfgv==3.5.0
+distlib==0.4.3
+filelock==3.32.5
+identify==2.6.19
+nodeenv==1.10.0
+platformdirs==4.11.7
+pre_commit==4.6.2
+python-discovery==1.6.0
+ruff==0.16.5
+virtualenv==21.7.8
