@@ -19,6 +19,17 @@ class OrderItem(SQLModel, table=True):
     ever hard-deleted, only the catalog link degrades to NULL. The
     `*_snapshot` fields are what the order history actually displays, and
     they never change regardless of what happens to the catalog afterward.
+
+    In practice this SET NULL is rarely what actually fires: checkout
+    always creates a LibraryItem alongside every OrderItem, and
+    LibraryItem.game_id is ON DELETE RESTRICT (see library_item.py) — a
+    stricter rule on the same `games` row. SQLite evaluates every foreign
+    key before a DELETE runs, so that RESTRICT blocks the hard-delete
+    first, before this SET NULL ever gets a chance to apply. This SET NULL
+    therefore only takes effect for a game that was ordered but never
+    entered any library — not the normal purchase flow. Retiring a game
+    from the catalog for real means soft-deleting it (`Game.deleted_at`),
+    not hard-deleting the row.
     """
 
     __tablename__ = "order_items"
