@@ -27,6 +27,9 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Contexto local para agentes (no se entrega como parte del trabajo)
+CLAUDE.md
+
 # Ruff / mypy cache
 .ruff_cache/
 .mypy_cache/
