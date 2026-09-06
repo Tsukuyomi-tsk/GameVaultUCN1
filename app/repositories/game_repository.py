@@ -79,6 +79,9 @@ class GameDetailRow:
     rating_count: int
 
 
+# GameAdminRow es el "paquete" que arma load_admin_row(): junta el juego
+# con sus imagenes y categorias en un solo objeto, para que el router de
+# admin no tenga que hacer 3 consultas sueltas por separado.
 @dataclass
 class GameAdminRow:
     """Full admin view of one game: the row itself plus its images and
@@ -274,6 +277,9 @@ class GameRepository(BaseRepository[Game]):
         inactive game by slug too.
         """
         statement = select(Game).where(Game.slug == slug)
+        # include_deleted=True se usa para chequear unicidad: un slug de
+        # un juego soft-deleted sigue "ocupado" en la base de datos, asi
+        # que un juego nuevo no puede reutilizarlo.
         if not include_deleted:
             statement = statement.where(Game.deleted_at.is_(None))
         return self.session.exec(statement).first()
@@ -284,13 +290,26 @@ class GameRepository(BaseRepository[Game]):
         distinguishes them (via `is_active`/`deleted_at` on the response),
         not this query.
         """
+        # A diferencia de search() (Fase 3), aca NO hay ningun WHERE sobre
+        # is_active/deleted_at: el admin tiene que poder ver y gestionar
+        # absolutamente todos los juegos, esten activos, inactivos o
+        # eliminados.
         statement = select(Game)
+        # Busqueda de texto opcional, solo sobre el titulo (mas simple que
+        # la busqueda publica de Fase 3, que tambien mira la descripcion).
         if q:
             like_pattern = f"%{q}%"
             statement = statement.where(Game.title.ilike(like_pattern))
 
+        # Cuenta cuantos juegos en total cumplen el filtro de busqueda
+        # (antes de aplicar offset/limit), para el "total" de la respuesta
+        # paginada.
         total = self.session.execute(statement.with_only_columns(func.count(Game.id))).scalar_one()
 
+        # Trae la pagina pedida: los juegos mas nuevos primero (created_at
+        # descendente), con el id como criterio de desempate para que el
+        # orden sea siempre el mismo aunque dos juegos tengan la misma
+        # fecha de creacion.
         rows = self.session.exec(
             statement.order_by(Game.created_at.desc(), Game.id.desc()).offset(offset).limit(limit)
         ).all()
@@ -302,9 +321,20 @@ class GameRepository(BaseRepository[Game]):
         accepts the full desired set, and avoids needing separate
         add/remove-category endpoints.
         """
+        # Paso 1: borra TODOS los vinculos categoria<->juego que existieran
+        # previamente para este juego. delete(GameCategoryLink) arma un
+        # DELETE FROM game_category_links WHERE game_id = ... — se ejecuta
+        # con session.execute() (no session.exec()) porque es una
+        # sentencia DELETE, no un SELECT.
         self.session.execute(delete(GameCategoryLink).where(GameCategoryLink.game_id == game_id))
+        # Paso 2: inserta un vinculo nuevo por cada category_id recibido.
+        # Si category_ids llega vacia, este for simplemente no itera y el
+        # juego queda sin categorias — comportamiento valido.
         for category_id in category_ids:
             self.session.add(GameCategoryLink(game_id=game_id, category_id=category_id))
+        # flush() manda los INSERT/DELETE a la base de datos dentro de la
+        # transaccion actual, pero sin confirmarla (commit) todavia — eso
+        # queda a cargo del servicio que orquesta la operacion completa.
         self.session.flush()
 
     def load_admin_row(self, game: Game) -> GameAdminRow:
@@ -314,15 +344,23 @@ class GameRepository(BaseRepository[Game]):
         a game needs to see a link to a category that's since been
         soft-deleted, not have it silently vanish.
         """
+        # Trae todas las imagenes del juego, portada primero.
         images = self.session.exec(
             select(GameImage)
             .where(GameImage.game_id == game.id)
             .order_by(GameImage.is_cover.desc(), GameImage.sort_order.asc())
         ).all()
+        # Trae las categorias asociadas al juego, uniendo la tabla puente
+        # game_category_links con categories. A diferencia de la vista
+        # publica (Fase 3), aca NO se filtra Category.deleted_at.is_(None):
+        # el admin necesita ver aunque sea una categoria eliminada para
+        # poder decidir si desvincularla o restaurarla.
         categories = self.session.exec(
             select(Category)
             .join(GameCategoryLink, GameCategoryLink.category_id == Category.id)
             .where(GameCategoryLink.game_id == game.id)
             .order_by(Category.name.asc())
         ).all()
+        # Empaqueta las tres piezas (juego + imagenes + categorias) en un
+        # solo objeto GameAdminRow para devolver.
         return GameAdminRow(game=game, images=list(images), categories=list(categories))

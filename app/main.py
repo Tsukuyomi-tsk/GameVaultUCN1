@@ -64,12 +64,19 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(catalog_router)
+# Los 5 routers del backoffice de admin (Fase 4) — cada uno ya trae su
+# propio prefix="/admin/..." definido en su archivo, asi que aca solo hay
+# que registrarlos.
 app.include_router(admin_games_router)
 app.include_router(admin_categories_router)
 app.include_router(admin_offers_router)
 app.include_router(admin_users_router)
 app.include_router(admin_stats_router)
 
+# app.mount (a diferencia de include_router) no maneja rutas dinamicas de
+# la API: sirve archivos ESTATICOS directamente desde una carpeta del
+# disco. Esto es lo que hace que una imagen guardada en modo dev-local
+# (ver cloudinary_client.py) sea accesible por HTTP en "/media/<archivo>".
 # Serves ./media/ when Cloudinary credentials are absent (settings.media_mode
 # == "dev-local") — see the plan's "Contrato del fallback". check_dir=False
 # because the folder is only created lazily, on the first dev-mode upload.

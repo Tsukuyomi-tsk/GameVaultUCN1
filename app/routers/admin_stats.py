@@ -23,10 +23,14 @@ router = APIRouter(prefix="/admin/stats", tags=["admin-stats"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+# GET /admin/stats/popularity — top de juegos mas deseados y mas comprados.
 @router.get("/popularity", response_model=PopularityStats)
 def get_popularity(
     session: SessionDep,
     _admin: AdminUser,
+    # Query(alias="from"): el parametro de Python se llama date_from (no
+    # se puede llamar "from", es palabra reservada), pero en la URL real
+    # el query param sigue siendo "?from=...", tal como lo pide el plan.
     date_from: Annotated[datetime | None, Query(alias="from")] = None,
     date_to: Annotated[datetime | None, Query(alias="to")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 10,
@@ -37,6 +41,9 @@ def get_popularity(
     return PopularityStats(
         date_from=date_from,
         date_to=date_to,
+        # Convierte cada PopularityRow (dataclass interno del repositorio)
+        # en un PopularityEntry (schema Pydantic de respuesta) — nunca se
+        # devuelve el dataclass interno directamente desde el router.
         top_wishlisted=[
             PopularityEntry(game_id=r.game_id, title=r.title, slug=r.slug, count=r.count)
             for r in top_wishlisted

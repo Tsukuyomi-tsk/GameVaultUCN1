@@ -15,6 +15,10 @@ from app.repositories.stats_repository import PopularityRow, StatsRepository
 def get_popularity(
     session: Session, *, date_from: datetime | None, date_to: datetime | None, limit: int
 ) -> tuple[list[PopularityRow], list[PopularityRow]]:
+    # Servicio deliberadamente muy fino (casi transparente): no hay
+    # ninguna regla de negocio que agregar aca, solo se pide al
+    # repositorio las dos listas (deseados y comprados) por separado y se
+    # devuelven juntas, para que el router arme la respuesta final.
     stats = StatsRepository(session)
     top_wishlisted = stats.top_wishlisted(date_from=date_from, date_to=date_to, limit=limit)
     top_purchased = stats.top_purchased(date_from=date_from, date_to=date_to, limit=limit)

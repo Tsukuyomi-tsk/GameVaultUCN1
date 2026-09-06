@@ -22,6 +22,8 @@ router = APIRouter(prefix="/admin/users", tags=["admin-users"])
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
+# GET /admin/users — listado paginado, con filtros opcionales de rol y
+# estado de suspension.
 @router.get("", response_model=UserPage)
 def list_users(
     session: SessionDep,
@@ -43,9 +45,17 @@ def list_users(
     )
 
 
+# PATCH /admin/users/{user_id}/suspend — suspende una cuenta.
 @router.patch("/{user_id}/suspend", response_model=AdminUserRead)
 def suspend_user(
-    user_id: int, payload: SuspendUserRequest, session: SessionDep, admin: AdminUser
+    user_id: int,
+    payload: SuspendUserRequest,
+    session: SessionDep,
+    # Aca el parametro se llama "admin" (sin guion bajo), a diferencia del
+    # resto de las rutas: esta ruta SI necesita usar el objeto — para
+    # sacarle el id y pasarselo al servicio (que valida que un admin no se
+    # pueda suspender a si mismo).
+    admin: AdminUser,
 ) -> AdminUserRead:
     user = admin_user_service.suspend_user(
         session, admin_id=admin.id, user_id=user_id, reason=payload.reason
@@ -53,6 +63,7 @@ def suspend_user(
     return AdminUserRead.model_validate(user)
 
 
+# PATCH /admin/users/{user_id}/reactivate — revierte una suspension.
 @router.patch("/{user_id}/reactivate", response_model=AdminUserRead)
 def reactivate_user(user_id: int, session: SessionDep, _admin: AdminUser) -> AdminUserRead:
     user = admin_user_service.reactivate_user(session, user_id=user_id)

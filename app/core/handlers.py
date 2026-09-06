@@ -33,6 +33,18 @@ def _error_response(
     # plain json.dumps chokes on it ("Object of type ValueError is not JSON
     # serializable"), turning a legitimate 422 into an unhandled 500. This
     # is the same fix FastAPI's own default validation-error handler uses.
+    #
+    # NOTA (bug real encontrado durante el testing de Fase 4): antes, esta
+    # funcion armaba el dict de la respuesta y lo pasaba DIRECTO a
+    # JSONResponse(content=...). JSONResponse serializa ese dict con
+    # json.dumps "a secas" — y json.dumps no sabe convertir un objeto
+    # Python arbitrario (como una excepcion ValueError) a JSON. Cuando
+    # `details` es exc.errors() de una RequestValidationError, Pydantic a
+    # veces mete ahi adentro la excepcion original sin convertir, y todo
+    # el response reventaba con un 500 en vez de devolver el 422 esperado.
+    # jsonable_encoder() recorre la estructura entera y convierte
+    # cualquier valor "raro" (excepciones incluidas) a algo serializable
+    # ANTES de que JSONResponse intente convertirlo a texto JSON.
     content = jsonable_encoder(
         {
             "error": {"code": code, "message": message, "details": details},

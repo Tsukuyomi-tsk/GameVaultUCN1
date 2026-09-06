@@ -57,10 +57,16 @@ class OfferRepository(BaseRepository[Offer]):
     delete via BaseRepository.delete(), not a soft one.
     """
 
+    # Le indica a BaseRepository sobre que tabla trabajan get()/add()/
+    # delete() heredados: "offers".
     model = Offer
 
     def list_all(self, *, game_id: int | None = None) -> list[Offer]:
+        # Trae todas las ofertas, mas nuevas (por fecha de inicio) primero.
         statement = select(Offer).order_by(Offer.starts_at.desc())
+        # game_id es un filtro opcional: si se paso, se limita el listado
+        # a las ofertas de ESE juego; si no, se listan las ofertas de
+        # todos los juegos.
         if game_id is not None:
             statement = statement.where(Offer.game_id == game_id)
         return list(self.session.exec(statement).all())
@@ -82,11 +88,25 @@ class OfferRepository(BaseRepository[Offer]):
         there's nothing to protect against.
         """
         statement = select(Offer).where(
+            # Solo interesan las ofertas del mismo juego...
             Offer.game_id == game_id,
+            # ...que esten activas (una oferta desactivada no compite por
+            # el mismo motivo que dos ofertas inactivas tampoco compiten
+            # entre si: si esta apagada, no aplica ningun descuento).
             Offer.is_active.is_(True),
+            # Estas dos condiciones juntas son la formula clasica de
+            # "interseccion de rangos de fechas": dos rangos [A,B] y [C,D]
+            # se solapan si A <= D Y B >= C. Aca A/B son el rango nuevo que
+            # se quiere guardar (starts_at/ends_at) y C/D es el rango de
+            # cada oferta ya existente en la base de datos (Offer.starts_at/
+            # Offer.ends_at) — si ambas condiciones se cumplen a la vez,
+            # los dos rangos comparten al menos un instante en comun.
             Offer.starts_at <= ends_at,
             Offer.ends_at >= starts_at,
         )
+        # Al actualizar una oferta existente, hay que excluir A LA MISMA
+        # oferta de la comparacion — si no, siempre "chocaria contra si
+        # misma" y ninguna edicion de fechas podria guardarse nunca.
         if exclude_offer_id is not None:
             statement = statement.where(Offer.id != exclude_offer_id)
         return list(self.session.exec(statement).all())
