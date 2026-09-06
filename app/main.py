@@ -13,11 +13,17 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
 from app.core.handlers import register_exception_handlers
 from app.core.rate_limit import limiter
+from app.routers.admin_categories import router as admin_categories_router
+from app.routers.admin_games import router as admin_games_router
+from app.routers.admin_offers import router as admin_offers_router
+from app.routers.admin_stats import router as admin_stats_router
+from app.routers.admin_users import router as admin_users_router
 from app.routers.auth import router as auth_router
 from app.routers.catalog import router as catalog_router
 
@@ -58,6 +64,16 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(catalog_router)
+app.include_router(admin_games_router)
+app.include_router(admin_categories_router)
+app.include_router(admin_offers_router)
+app.include_router(admin_users_router)
+app.include_router(admin_stats_router)
+
+# Serves ./media/ when Cloudinary credentials are absent (settings.media_mode
+# == "dev-local") — see the plan's "Contrato del fallback". check_dir=False
+# because the folder is only created lazily, on the first dev-mode upload.
+app.mount("/media", StaticFiles(directory="media", check_dir=False), name="media")
 
 
 @app.get("/health", tags=["health"])

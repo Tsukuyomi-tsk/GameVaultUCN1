@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
@@ -25,13 +26,20 @@ logger = logging.getLogger(__name__)
 def _error_response(
     status_code: int, code: str, message: str, request: Request, details: object = None
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
+    # jsonable_encoder, not a raw dict straight into JSONResponse: Pydantic's
+    # own ValidationError.errors() can embed the raw exception object in
+    # ctx.error when a validator raises ValueError directly (every
+    # @field_validator/@model_validator in this app does exactly that) —
+    # plain json.dumps chokes on it ("Object of type ValueError is not JSON
+    # serializable"), turning a legitimate 422 into an unhandled 500. This
+    # is the same fix FastAPI's own default validation-error handler uses.
+    content = jsonable_encoder(
+        {
             "error": {"code": code, "message": message, "details": details},
             "request_id": getattr(request.state, "request_id", None),
-        },
+        }
     )
+    return JSONResponse(status_code=status_code, content=content)
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:

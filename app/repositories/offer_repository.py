@@ -17,6 +17,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, select
 
 from app.models.offer import Offer
+from app.repositories.base import BaseRepository
 
 
 def active_offer_clause(now: datetime) -> ColumnElement[bool]:
@@ -48,3 +49,44 @@ def compute_effective_price(base_price: Decimal, offer: Offer | None) -> tuple[D
     discount = (base_price * offer.discount_percent) / Decimal(100)
     final_price = (base_price - discount).quantize(Decimal("0.01"))
     return final_price, offer.discount_percent
+
+
+class OfferRepository(BaseRepository[Offer]):
+    """Admin CRUD for offers (Fase 4). `Offer` has no `deleted_at` — nothing
+    else references an offer by id, so removing one is a genuine hard
+    delete via BaseRepository.delete(), not a soft one.
+    """
+
+    model = Offer
+
+    def list_all(self, *, game_id: int | None = None) -> list[Offer]:
+        statement = select(Offer).order_by(Offer.starts_at.desc())
+        if game_id is not None:
+            statement = statement.where(Offer.game_id == game_id)
+        return list(self.session.exec(statement).all())
+
+    def list_overlapping_active(
+        self,
+        *,
+        game_id: int,
+        starts_at: datetime,
+        ends_at: datetime,
+        exclude_offer_id: int | None = None,
+    ) -> list[Offer]:
+        """Active offers on this game whose [starts_at, ends_at] window
+        intersects the given one — the check admin create/update calls
+        before saving, so at most one offer is ever live for a game at a
+        time (the invariant active_offer_clause/get_active_offer_for_game
+        already assume). Only `is_active` offers count: two disabled
+        offers overlapping in date range can't both apply a discount, so
+        there's nothing to protect against.
+        """
+        statement = select(Offer).where(
+            Offer.game_id == game_id,
+            Offer.is_active.is_(True),
+            Offer.starts_at <= ends_at,
+            Offer.ends_at >= starts_at,
+        )
+        if exclude_offer_id is not None:
+            statement = statement.where(Offer.id != exclude_offer_id)
+        return list(self.session.exec(statement).all())

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, delete, func
 from sqlmodel import select
 
 from app.models import Category, Game, GameCategoryLink, GameImage, Offer, Order, OrderItem, Review
@@ -77,6 +77,17 @@ class GameDetailRow:
     categories: list[Category]
     rating_average: float | None
     rating_count: int
+
+
+@dataclass
+class GameAdminRow:
+    """Full admin view of one game: the row itself plus its images and
+    categories — no catalog-only computed pricing, unlike GameDetailRow.
+    """
+
+    game: Game
+    images: list[GameImage]
+    categories: list[Category]
 
 
 class GameRepository(BaseRepository[Game]):
@@ -255,3 +266,63 @@ class GameRepository(BaseRepository[Game]):
             rating_average=float(rating_average) if rating_average is not None else None,
             rating_count=int(rating_count),
         )
+
+    def get_by_slug(self, slug: str, *, include_deleted: bool = False) -> Game | None:
+        """Used by the admin service to enforce slug uniqueness on create
+        and on update — unlike `get_detail_by_slug`, this ignores
+        `is_active` entirely, since an admin must be able to look up an
+        inactive game by slug too.
+        """
+        statement = select(Game).where(Game.slug == slug)
+        if not include_deleted:
+            statement = statement.where(Game.deleted_at.is_(None))
+        return self.session.exec(statement).first()
+
+    def list_admin(self, *, q: str | None, offset: int, limit: int) -> tuple[list[Game], int]:
+        """Every game the backoffice can manage — inactive and soft-deleted
+        included, unlike the public `search()`. The admin UI is what
+        distinguishes them (via `is_active`/`deleted_at` on the response),
+        not this query.
+        """
+        statement = select(Game)
+        if q:
+            like_pattern = f"%{q}%"
+            statement = statement.where(Game.title.ilike(like_pattern))
+
+        total = self.session.execute(statement.with_only_columns(func.count(Game.id))).scalar_one()
+
+        rows = self.session.exec(
+            statement.order_by(Game.created_at.desc(), Game.id.desc()).offset(offset).limit(limit)
+        ).all()
+        return list(rows), int(total)
+
+    def set_categories(self, game_id: int, category_ids: list[int]) -> None:
+        """Replaces every category link for a game with exactly
+        `category_ids` — simplest correct semantics for a PATCH that
+        accepts the full desired set, and avoids needing separate
+        add/remove-category endpoints.
+        """
+        self.session.execute(delete(GameCategoryLink).where(GameCategoryLink.game_id == game_id))
+        for category_id in category_ids:
+            self.session.add(GameCategoryLink(game_id=game_id, category_id=category_id))
+        self.session.flush()
+
+    def load_admin_row(self, game: Game) -> GameAdminRow:
+        """Bundles a Game already fetched by the service with its images
+        and categories, for GameAdminDetail. Unlike get_detail_by_slug,
+        categories here are NOT filtered by deleted_at — an admin editing
+        a game needs to see a link to a category that's since been
+        soft-deleted, not have it silently vanish.
+        """
+        images = self.session.exec(
+            select(GameImage)
+            .where(GameImage.game_id == game.id)
+            .order_by(GameImage.is_cover.desc(), GameImage.sort_order.asc())
+        ).all()
+        categories = self.session.exec(
+            select(Category)
+            .join(GameCategoryLink, GameCategoryLink.category_id == Category.id)
+            .where(GameCategoryLink.game_id == game.id)
+            .order_by(Category.name.asc())
+        ).all()
+        return GameAdminRow(game=game, images=list(images), categories=list(categories))
