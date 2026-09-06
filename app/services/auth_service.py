@@ -23,6 +23,7 @@ from __future__ import annotations
 import secrets
 from datetime import timedelta
 
+import jwt
 from sqlmodel import Session
 
 from app.core.config import settings
@@ -177,10 +178,21 @@ def login(session: Session, *, email: str, password: str) -> tuple[User, str]:
 
 
 def logout(session: Session, *, token: str) -> None:
-    """Blacklist the current access token's `jti`. Idempotent: logging out
-    twice with the same (already-revoked) token is a no-op, not an error.
+    """Blacklist the current access token's `jti`.
+
+    Genuinely idempotent, on purpose: logging out twice with the same
+    token — even one already revoked, expired, or otherwise malformed — is
+    a no-op, never an error. That's why the router hands this the raw
+    bearer token instead of a full CurrentUser: requiring the token to
+    still be currently valid would reject the exact case this exists to
+    handle (a client retrying logout, or calling it on a token that's
+    already dead). A token that can't even be decoded has nothing to
+    revoke, so it's treated the same as an already-blacklisted one.
     """
-    payload = decode_access_token(token)
+    try:
+        payload = decode_access_token(token)
+    except jwt.PyJWTError:
+        return
     jti = payload["jti"]
 
     blacklist = TokenBlacklistRepository(session)

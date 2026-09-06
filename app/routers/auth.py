@@ -71,9 +71,10 @@ def login(request: Request, payload: LoginRequest, session: SessionDep) -> Login
 
 @router.post("/logout", response_model=MessageResponse)
 @limiter.limit(settings.rate_limit_auth)
-def logout(
-    request: Request, session: SessionDep, _current_user: CurrentUser, token: BearerToken
-) -> MessageResponse:
+def logout(request: Request, session: SessionDep, token: BearerToken) -> MessageResponse:
+    # Deliberately not CurrentUser: logout must stay idempotent even for a
+    # token that's already revoked, expired, or otherwise unusable to
+    # authenticate — see the docstring on auth_service.logout for why.
     auth_service.logout(session, token=token)
     return MessageResponse(message="Sesion cerrada.")
 
