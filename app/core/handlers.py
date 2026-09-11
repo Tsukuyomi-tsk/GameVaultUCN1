@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
@@ -25,13 +26,32 @@ logger = logging.getLogger(__name__)
 def _error_response(
     status_code: int, code: str, message: str, request: Request, details: object = None
 ) -> JSONResponse:
-    return JSONResponse(
-        status_code=status_code,
-        content={
+    # jsonable_encoder, not a raw dict straight into JSONResponse: Pydantic's
+    # own ValidationError.errors() can embed the raw exception object in
+    # ctx.error when a validator raises ValueError directly (every
+    # @field_validator/@model_validator in this app does exactly that) —
+    # plain json.dumps chokes on it ("Object of type ValueError is not JSON
+    # serializable"), turning a legitimate 422 into an unhandled 500. This
+    # is the same fix FastAPI's own default validation-error handler uses.
+    #
+    # NOTA (bug real encontrado durante el testing de Fase 4): antes, esta
+    # funcion armaba el dict de la respuesta y lo pasaba DIRECTO a
+    # JSONResponse(content=...). JSONResponse serializa ese dict con
+    # json.dumps "a secas" — y json.dumps no sabe convertir un objeto
+    # Python arbitrario (como una excepcion ValueError) a JSON. Cuando
+    # `details` es exc.errors() de una RequestValidationError, Pydantic a
+    # veces mete ahi adentro la excepcion original sin convertir, y todo
+    # el response reventaba con un 500 en vez de devolver el 422 esperado.
+    # jsonable_encoder() recorre la estructura entera y convierte
+    # cualquier valor "raro" (excepciones incluidas) a algo serializable
+    # ANTES de que JSONResponse intente convertirlo a texto JSON.
+    content = jsonable_encoder(
+        {
             "error": {"code": code, "message": message, "details": details},
             "request_id": getattr(request.state, "request_id", None),
-        },
+        }
     )
+    return JSONResponse(status_code=status_code, content=content)
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
