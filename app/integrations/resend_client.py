@@ -23,6 +23,7 @@ import resend
 
 from app.core.config import settings
 from app.core.time import utcnow
+from app.models import Order
 
 logger = logging.getLogger(__name__)
 
@@ -75,5 +76,26 @@ def send_verification_email(*, to_email: str, code: str) -> None:
         f"<p>Tu codigo de verificacion es:</p><h2>{code}</h2>"
         f"<p>Expira en {settings.verification_code_ttl_minutes} minutos. "
         "Si no fuiste tu, puedes ignorar este correo.</p>"
+    )
+    _send(to_email=to_email, subject=subject, html=html)
+
+
+def send_receipt_email(*, to_email: str, order: Order) -> None:
+    """Confirmation email sent after checkout (Fase 5), from the same
+    BackgroundTasks callback that renders the PDF boleta
+    (app.integrations.pdf_client). Doesn't attach the PDF itself — the
+    customer downloads it from GET /orders/{order_code}/receipt, which is
+    the only path that enforces ensure_owner_or_admin on it.
+    """
+    # Igual que send_verification_email: arma el asunto y el HTML del
+    # correo, y delega el envio (real o simulado a ./outbox/, segun
+    # settings.email_mode) en _send().
+    subject = f"Tu compra en GameVault UCN - Orden {order.order_code}"
+    html = (
+        "<p>Gracias por tu compra en GameVault UCN.</p>"
+        f"<p>Orden: <strong>{order.order_code}</strong></p>"
+        f"<p>Total pagado: ${order.total}</p>"
+        "<p>Puedes descargar tu boleta y ver el detalle de la compra desde "
+        "tu cuenta en cualquier momento.</p>"
     )
     _send(to_email=to_email, subject=subject, html=html)

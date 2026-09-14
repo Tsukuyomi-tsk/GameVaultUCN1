@@ -25,7 +25,10 @@ from app.routers.admin_offers import router as admin_offers_router
 from app.routers.admin_stats import router as admin_stats_router
 from app.routers.admin_users import router as admin_users_router
 from app.routers.auth import router as auth_router
+from app.routers.cart import router as cart_router
 from app.routers.catalog import router as catalog_router
+from app.routers.library import router as library_router
+from app.routers.orders import router as orders_router
 
 
 @asynccontextmanager
@@ -72,6 +75,10 @@ app.include_router(admin_categories_router)
 app.include_router(admin_offers_router)
 app.include_router(admin_users_router)
 app.include_router(admin_stats_router)
+# Carrito, checkout/pedidos y biblioteca (Fase 5).
+app.include_router(cart_router)
+app.include_router(orders_router)
+app.include_router(library_router)
 
 # app.mount (a diferencia de include_router) no maneja rutas dinamicas de
 # la API: sirve archivos ESTATICOS directamente desde una carpeta del
