@@ -71,6 +71,46 @@ def get_current_user(token: BearerToken, session: Annotated[Session, Depends(get
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def get_optional_bearer_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
+) -> str | None:
+    """Like get_bearer_token, but returns None instead of raising when no
+    Authorization header is present at all — used by endpoints that work
+    for both guests and authenticated users (the cart, Fase 5).
+    """
+    # Unica diferencia con get_bearer_token: si NO vino header, se
+    # devuelve None en vez de lanzar UnauthorizedError — el resto del
+    # comportamiento (extraer el token crudo del "Bearer <token>") es
+    # identico.
+    if credentials is None:
+        return None
+    return credentials.credentials
+
+
+OptionalBearerToken = Annotated[str | None, Depends(get_optional_bearer_token)]
+
+
+def get_optional_current_user(
+    token: OptionalBearerToken, session: Annotated[Session, Depends(get_session)]
+) -> User | None:
+    """None for a genuinely anonymous request. When a token IS present, it
+    goes through the exact same checks as get_current_user (blacklist,
+    verified, not suspended) — a bad token still fails loudly here, it just
+    doesn't fail for a request that sent no token at all.
+    """
+    if token is None:
+        # Nadie mando Authorization: esto es un invitado genuino, no un
+        # error.
+        return None
+    # Si SI vino un token, se reusa get_current_user tal cual — un token
+    # invalido/expirado/de un usuario suspendido sigue fallando con la
+    # misma excepcion que en cualquier ruta protegida normal.
+    return get_current_user(token, session)
+
+
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]
+
+
 def require_admin(user: CurrentUser) -> User:
     if user.role != UserRole.ADMIN:
         raise ForbiddenError("Se requiere rol de administrador.")
