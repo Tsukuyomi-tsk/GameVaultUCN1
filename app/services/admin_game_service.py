@@ -9,6 +9,7 @@ email uniqueness).
 
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.core.exceptions import NotFoundError, ValidationError
@@ -92,28 +93,41 @@ def create_game(session: Session, *, payload: GameCreate) -> GameAdminRow:
     # categoria es invalida).
     _validate_category_ids(categories, payload.category_ids)
 
-    # Construye el objeto Game (todavia sin id, sin guardar) copiando cada
-    # campo del payload validado por Pydantic.
-    game = games.add(
-        Game(
-            title=payload.title,
-            slug=payload.slug,
-            description=payload.description,
-            developer=payload.developer,
-            publisher=payload.publisher,
-            platform=payload.platform,
-            release_date=payload.release_date,
-            base_price=payload.base_price,
+    try:
+        # Construye el objeto Game (todavia sin id, sin guardar) copiando
+        # cada campo del payload validado por Pydantic.
+        game = games.add(
+            Game(
+                title=payload.title,
+                slug=payload.slug,
+                description=payload.description,
+                developer=payload.developer,
+                publisher=payload.publisher,
+                platform=payload.platform,
+                release_date=payload.release_date,
+                base_price=payload.base_price,
+            )
         )
-    )
-    # games.add() ya hizo flush() y refresh(), asi que en este punto
-    # game.id ya existe (la base de datos ya le asigno un id autoincremental)
-    # aunque la transaccion todavia no este confirmada (commit).
-    games.set_categories(game.id, payload.category_ids)
-    # commit(): recien ACA se confirma la transaccion completa (el juego
-    # nuevo + sus vinculos de categoria) de forma atomica — si algo
-    # hubiera fallado antes de esta linea, nada se habria guardado.
-    session.commit()
+        # games.add() ya hizo flush() y refresh(), asi que en este punto
+        # game.id ya existe (la base de datos ya le asigno un id
+        # autoincremental) aunque la transaccion todavia no este
+        # confirmada (commit).
+        games.set_categories(game.id, payload.category_ids)
+        # commit(): recien ACA se confirma la transaccion completa (el
+        # juego nuevo + sus vinculos de categoria) de forma atomica — si
+        # algo hubiera fallado antes de esta linea, nada se habria
+        # guardado.
+        session.commit()
+    except IntegrityError:
+        # Dos admins crearon el mismo slug a la vez: ambos pasaron el
+        # chequeo de arriba y el UNIQUE de la base de datos desempato. Se
+        # deshace este intento y se repite el chequeo, que ahora SI
+        # encuentra a la ganadora y responde con el mensaje de siempre
+        # (422) en vez de un 500.
+        session.rollback()
+        if games.get_by_slug(payload.slug, include_deleted=True) is not None:
+            raise ValidationError("Ya existe un juego con ese slug.") from None
+        raise
     # refresh() vuelve a leer el objeto desde la base de datos, por si
     # algun campo se genero o modifico del lado del servidor (por ejemplo,
     # created_at/updated_at con su valor por defecto).
@@ -161,15 +175,25 @@ def update_game(session: Session, *, game_id: int, payload: GameUpdate) -> GameA
     # Vuelve a agregar el objeto modificado a la sesion — SQLAlchemy ya
     # sabe que esta fila existe (tiene id), asi que esto se traduce en un
     # UPDATE, no en un INSERT nuevo.
-    games.add(game)
-    # Solo se tocan las categorias si category_ids vino explicito en el
-    # body (None = "no cambiar categorias", ver el comentario en
-    # schemas/admin_game.py sobre por que no se usa una lista vacia como
-    # valor por defecto).
-    if category_ids is not None:
-        _validate_category_ids(categories, category_ids)
-        games.set_categories(game.id, category_ids)
-    session.commit()
+    try:
+        games.add(game)
+        # Solo se tocan las categorias si category_ids vino explicito en el
+        # body (None = "no cambiar categorias", ver el comentario en
+        # schemas/admin_game.py sobre por que no se usa una lista vacia
+        # como valor por defecto).
+        if category_ids is not None:
+            _validate_category_ids(categories, category_ids)
+            games.set_categories(game.id, category_ids)
+        session.commit()
+    except IntegrityError:
+        # Misma carrera que en create_game: otro admin tomo el slug entre
+        # el chequeo y el UPDATE.
+        session.rollback()
+        new_slug = data.get("slug")
+        existing = games.get_by_slug(new_slug, include_deleted=True) if new_slug else None
+        if existing is not None and existing.id != game_id:
+            raise ValidationError("Ya existe un juego con ese slug.") from None
+        raise
     session.refresh(game)
     return games.load_admin_row(game)
 

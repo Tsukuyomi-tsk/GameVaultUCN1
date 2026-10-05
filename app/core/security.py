@@ -23,6 +23,11 @@ from app.core.time import utcnow
 
 _ENCODING = "utf-8"
 
+# bcrypt only reads the first 72 BYTES of a password and, since 5.0, raises
+# ValueError on anything longer instead of silently truncating. Bytes, not
+# characters: "n" is 1 byte in UTF-8 but "ñ" is 2 and an emoji is 4.
+BCRYPT_MAX_PASSWORD_BYTES = 72
+
 
 def hash_password(plain_password: str) -> str:
     """Hash a plaintext password with bcrypt. Never store the plain value."""
@@ -32,7 +37,15 @@ def hash_password(plain_password: str) -> str:
 
 
 def verify_password(plain_password: str, password_hash: str) -> bool:
-    """Check a plaintext password against a stored bcrypt hash."""
+    """Check a plaintext password against a stored bcrypt hash.
+
+    A password over bcrypt's 72-byte limit can never match a hash we
+    created (registration rejects those), so it is simply "wrong" — False,
+    not the ValueError bcrypt would raise, which surfaced as a 500 only for
+    emails that exist and so also leaked which accounts are registered.
+    """
+    if len(plain_password.encode(_ENCODING)) > BCRYPT_MAX_PASSWORD_BYTES:
+        return False
     return bcrypt.checkpw(plain_password.encode(_ENCODING), password_hash.encode(_ENCODING))
 
 

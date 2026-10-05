@@ -24,6 +24,7 @@ import secrets
 from datetime import timedelta
 
 import jwt
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.core.config import settings
@@ -97,7 +98,16 @@ def register(session: Session, *, email: str, password: str, full_name: str) -> 
     if users.get_by_email(email) is not None:
         raise ConflictError("Ya existe una cuenta con este correo.")
 
-    user = users.add(User(email=email, password_hash=hash_password(password), full_name=full_name))
+    try:
+        user = users.add(
+            User(email=email, password_hash=hash_password(password), full_name=full_name)
+        )
+    except IntegrityError:
+        # Two requests with the same email both passed the check above; the
+        # UNIQUE index on users.email arbitrated and this one lost. Same
+        # answer as the sequential duplicate, not a 500.
+        session.rollback()
+        raise ConflictError("Ya existe una cuenta con este correo.") from None
     _issue_verification_code(session, user)
     session.commit()
     session.refresh(user)
@@ -210,11 +220,16 @@ def logout(session: Session, *, token: str) -> None:
     if blacklist.is_revoked(jti):
         return
 
-    blacklist.add(
-        TokenBlacklist(
-            jti=jti,
-            user_id=int(payload["sub"]),
-            expires_at=token_expiry_from_claims(payload),
+    try:
+        blacklist.add(
+            TokenBlacklist(
+                jti=jti,
+                user_id=int(payload["sub"]),
+                expires_at=token_expiry_from_claims(payload),
+            )
         )
-    )
-    session.commit()
+        session.commit()
+    except IntegrityError:
+        # A concurrent logout with the same token revoked the jti first:
+        # the goal (token revoked) is already met, so stay a silent no-op.
+        session.rollback()

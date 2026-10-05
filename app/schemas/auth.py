@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.core.security import BCRYPT_MAX_PASSWORD_BYTES
 from app.schemas.user import UserRead
 
 
@@ -21,6 +22,14 @@ class RegisterRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def _password_strength(cls, value: str) -> str:
+        # Se mide en BYTES, no en caracteres: max_length=128 de arriba
+        # cuenta caracteres, pero bcrypt solo acepta 72 bytes y una "ñ" o
+        # un emoji ocupan 2 y 4 bytes respectivamente.
+        if len(value.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
+            raise ValueError(
+                f"La contrasena no puede superar {BCRYPT_MAX_PASSWORD_BYTES} bytes "
+                "(los caracteres especiales o emojis ocupan mas de 1 byte)."
+            )
         if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
             raise ValueError("La contrasena debe combinar letras y numeros.")
         return value

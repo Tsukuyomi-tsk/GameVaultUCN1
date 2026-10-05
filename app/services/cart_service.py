@@ -17,6 +17,7 @@ import secrets
 from dataclasses import dataclass
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.core.exceptions import NotFoundError
@@ -190,9 +191,23 @@ def add_item(
     # Esta si es la version que CREA un carrito si hace falta (a diferencia
     # de get_cart): agregar un item es la operacion que en la practica
     # "nace" el carrito de un invitado nuevo.
-    cart, new_token = _resolve_or_create_cart(session, user=user, cart_token=cart_token)
-    CartRepository(session).add_item(cart_id=cart.id, game_id=game_id)
-    session.commit()
+    def _add() -> tuple[Cart, str | None]:
+        cart, new_token = _resolve_or_create_cart(session, user=user, cart_token=cart_token)
+        CartRepository(session).add_item(cart_id=cart.id, game_id=game_id)
+        session.commit()
+        return cart, new_token
+
+    try:
+        cart, new_token = _add()
+    except IntegrityError:
+        # Dos requests simultaneas de un usuario sin carrito intentaron
+        # CREARLO a la vez (Cart.user_id es unico): la base de datos
+        # desempato y esta perdio. Se deshace y se repite UNA vez: ahora el
+        # carrito ya existe (la ganadora hizo commit), asi que el segundo
+        # intento lo encuentra. (Agregar el mismo juego dos veces ya no
+        # puede fallar: lo resuelve CartRepository.add_item.)
+        session.rollback()
+        cart, new_token = _add()
 
     # Si se genero un token nuevo (invitado sin carrito previo), ese es el
     # que hay que devolver; si no, se repite el que ya traia la request.

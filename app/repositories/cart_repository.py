@@ -13,6 +13,7 @@ garantia si algo se escapa del chequeo.
 from __future__ import annotations
 
 from sqlalchemy import delete
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import select
 
 from app.core.time import utcnow
@@ -57,20 +58,25 @@ class CartRepository(BaseRepository[Cart]):
         return list(self.session.exec(statement).all())
 
     def add_item(self, *, cart_id: int, game_id: int) -> None:
-        # Chequea PRIMERO si el juego ya esta en el carrito. Si ya esta,
-        # simplemente no hace nada — agregar el mismo juego dos veces es un
-        # no-op, no un error (ver el docstring de CartItem).
-        existing = self.session.exec(
-            select(CartItem).where(CartItem.cart_id == cart_id, CartItem.game_id == game_id)
-        ).first()
-        if existing is not None:
+        # Un solo INSERT ... ON CONFLICT DO NOTHING: si el juego YA esta en
+        # el carrito (UniqueConstraint cart_id + game_id) la base de datos
+        # simplemente ignora el INSERT — agregar el mismo juego dos veces
+        # es un no-op, no un error (ver el docstring de CartItem). Se hace
+        # en UN statement en vez de "buscar y despues insertar" porque con
+        # dos pasos, dos requests simultaneas pasaban la busqueda a la vez
+        # y la segunda reventaba con IntegrityError (500).
+        result = self.session.execute(
+            sqlite_insert(CartItem)
+            .values(cart_id=cart_id, game_id=game_id)
+            .on_conflict_do_nothing(index_elements=["cart_id", "game_id"])
+        )
+        if result.rowcount == 0:
+            # El juego ya estaba: nada cambio, no hace falta tocar el carrito.
             return
-        # Recien si NO estaba, se inserta la fila nueva.
-        self.session.add(CartItem(cart_id=cart_id, game_id=game_id))
         # Actualiza el updated_at del carrito, ya que su contenido cambio.
         self._touch(cart_id)
-        # flush() manda el INSERT a la base de datos dentro de la
-        # transaccion actual, sin confirmarla todavia (eso lo decide el
+        # flush() manda los cambios pendientes a la base de datos dentro de
+        # la transaccion actual, sin confirmarla todavia (eso lo decide el
         # servicio que llama).
         self.session.flush()
 

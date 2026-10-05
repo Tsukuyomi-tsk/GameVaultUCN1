@@ -179,10 +179,15 @@ def checkout(
         winning_order = orders.get_by_idempotency(user_id=user.id, idempotency_key=idempotency_key)
         if winning_order is not None:
             return winning_order, orders.list_items(winning_order.id)
-        # Si el error NO fue por esta carrera (algun otro UNIQUE distinto,
-        # por ejemplo), se re-lanza tal cual — no hay una orden ganadora
-        # que devolver en su lugar.
-        raise
+        # Si no hay orden ganadora con ESTA clave, el choque fue contra
+        # otro checkout del mismo usuario con una Idempotency-Key DISTINTA:
+        # los dos intentaron comprar los mismos juegos y el UNIQUE
+        # (user_id, game_id) de la biblioteca dejo pasar solo a uno. No hay
+        # doble cobro; a este se le avisa con un 409 en vez de un 500.
+        raise ConflictError(
+            "Otra solicitud de compra de tu carrito se proceso al mismo tiempo. "
+            "Revisa tu historial de pedidos."
+        ) from None
 
     session.refresh(order)
     return order, pending_items
