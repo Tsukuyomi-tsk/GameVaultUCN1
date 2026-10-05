@@ -6,6 +6,7 @@ associations to manage beyond what game CRUD already owns).
 
 from __future__ import annotations
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.core.exceptions import NotFoundError, ValidationError
@@ -21,21 +22,39 @@ def list_categories(session: Session) -> list[Category]:
     return CategoryRepository(session).list_all_admin()
 
 
-def create_category(session: Session, *, payload: CategoryCreate) -> Category:
-    categories = CategoryRepository(session)
-    # Dos chequeos de unicidad, uno por cada columna que el modelo
-    # Category exige unica: slug Y name. include_deleted=True porque una
-    # categoria eliminada sigue "ocupando" su slug/nombre en la base de
-    # datos (no se liberan al hacer soft delete).
-    if categories.get_by_slug(payload.slug, include_deleted=True) is not None:
+def _check_unique(
+    categories: CategoryRepository, *, slug: str, name: str, exclude_id: int | None = None
+) -> None:
+    # Dos chequeos de unicidad, uno por cada columna que el modelo Category
+    # exige unica: slug Y name. include_deleted=True porque una categoria
+    # eliminada sigue "ocupando" su slug/nombre en la base de datos (no se
+    # liberan al hacer soft delete). exclude_id sirve para el PATCH: una
+    # categoria no choca contra si misma.
+    existing = categories.get_by_slug(slug, include_deleted=True)
+    if existing is not None and existing.id != exclude_id:
         raise ValidationError("Ya existe una categoria con ese slug.")
-    if categories.get_by_name(payload.name, include_deleted=True) is not None:
+    existing = categories.get_by_name(name, include_deleted=True)
+    if existing is not None and existing.id != exclude_id:
         raise ValidationError("Ya existe una categoria con ese nombre.")
 
-    category = categories.add(
-        Category(name=payload.name, slug=payload.slug, description=payload.description)
-    )
-    session.commit()
+
+def create_category(session: Session, *, payload: CategoryCreate) -> Category:
+    categories = CategoryRepository(session)
+    _check_unique(categories, slug=payload.slug, name=payload.name)
+
+    try:
+        category = categories.add(
+            Category(name=payload.name, slug=payload.slug, description=payload.description)
+        )
+        session.commit()
+    except IntegrityError:
+        # Dos admins crearon la misma categoria a la vez: ambos pasaron el
+        # chequeo de arriba y el UNIQUE de la base de datos desempato. Se
+        # deshace este intento y se repite el chequeo — ahora SI encuentra
+        # a la ganadora y responde con el mismo mensaje preciso de siempre.
+        session.rollback()
+        _check_unique(categories, slug=payload.slug, name=payload.name)
+        raise
     session.refresh(category)
     return category
 
@@ -53,24 +72,26 @@ def update_category(session: Session, *, category_id: int, payload: CategoryUpda
     # Solo se re-valida unicidad si el campo vino en el body Y ademas es
     # distinto al valor que la categoria ya tenia — si el admin manda el
     # mismo slug que ya tenia, no hace falta chequear nada.
-    if "slug" in data and data["slug"] != category.slug:
-        existing = categories.get_by_slug(data["slug"], include_deleted=True)
-        # Si existe otra categoria (con OTRO id) con ese slug, es un
-        # conflicto real; si el "existing" resulta ser esta misma
-        # categoria, no hay problema.
-        if existing is not None and existing.id != category.id:
-            raise ValidationError("Ya existe una categoria con ese slug.")
-    if "name" in data and data["name"] != category.name:
-        existing = categories.get_by_name(data["name"], include_deleted=True)
-        if existing is not None and existing.id != category.id:
-            raise ValidationError("Ya existe una categoria con ese nombre.")
+    # Si existe otra categoria (con OTRO id) con ese slug/nombre, es un
+    # conflicto real; _check_unique ya excluye a esta misma categoria.
+    final_slug = data.get("slug", category.slug)
+    final_name = data.get("name", category.name)
+    if final_slug != category.slug or final_name != category.name:
+        _check_unique(categories, slug=final_slug, name=final_name, exclude_id=category.id)
 
     # Aplica cada campo presente en el body sobre el objeto ya cargado.
     for field, value in data.items():
         setattr(category, field, value)
 
-    categories.add(category)
-    session.commit()
+    try:
+        categories.add(category)
+        session.commit()
+    except IntegrityError:
+        # Misma carrera que en create_category (otro admin tomo el slug o
+        # el nombre entre el chequeo y el UPDATE).
+        session.rollback()
+        _check_unique(categories, slug=final_slug, name=final_name, exclude_id=category_id)
+        raise
     session.refresh(category)
     return category
 
