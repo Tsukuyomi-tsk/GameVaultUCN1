@@ -29,6 +29,8 @@ from app.routers.cart import router as cart_router
 from app.routers.catalog import router as catalog_router
 from app.routers.library import router as library_router
 from app.routers.orders import router as orders_router
+from app.routers.reviews import router as reviews_router
+from app.routers.wishlist import router as wishlist_router
 
 
 @asynccontextmanager
@@ -79,6 +81,9 @@ app.include_router(admin_stats_router)
 app.include_router(cart_router)
 app.include_router(orders_router)
 app.include_router(library_router)
+# Resenas y wishlist (Fase 6).
+app.include_router(reviews_router)
+app.include_router(wishlist_router)
 
 # app.mount (a diferencia de include_router) no maneja rutas dinamicas de
 # la API: sirve archivos ESTATICOS directamente desde una carpeta del
