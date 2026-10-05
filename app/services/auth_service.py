@@ -58,14 +58,16 @@ def _hash_code(code: str) -> str:
     return hash_password(code)
 
 
-def _reset_expired_block(user: User, now) -> None:
+def _reset_expired_block(session: Session, user: User, now) -> None:
     """Clear a suspension window that has already elapsed, and reset the
     attempt counter with it — see the module docstring for why both must
-    move together.
+    move together. Done as one conditional UPDATE (not by mutating `user`)
+    so a stale read can't overwrite attempts claimed by a concurrent
+    request; `user` is refreshed afterwards so callers see the result.
     """
-    if user.verification_blocked_until is not None and user.verification_blocked_until <= now:
-        user.verification_blocked_until = None
-        user.verification_attempts = 0
+    if UserRepository(session).reset_expired_verification_block(user.id, now):
+        session.commit()
+        session.refresh(user)
 
 
 def _issue_verification_code(session: Session, user: User) -> str:
@@ -109,7 +111,7 @@ def resend_verification(session: Session, *, email: str) -> None:
         return  # generic no-op — see module docstring
 
     now = utcnow()
-    _reset_expired_block(user, now)
+    _reset_expired_block(session, user, now)
     if user.verification_blocked_until is not None:
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
@@ -135,27 +137,36 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
         return
 
     now = utcnow()
-    _reset_expired_block(user, now)
+    _reset_expired_block(session, user, now)
     if user.verification_blocked_until is not None:
+        raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
+
+    # The attempt is spent BEFORE the code is checked, atomically, and
+    # committed right away (short transaction: bcrypt below is slow and
+    # must not hold the database write lock). If the budget is already
+    # gone — including to requests racing this one — the claim fails and
+    # the code is never even compared. A correct code wipes the counter
+    # below, so honest users are unaffected by the order.
+    users = UserRepository(session)
+    granted = users.claim_verification_attempt(
+        user.id,
+        max_attempts=settings.verification_max_attempts,
+        blocked_until=now + timedelta(minutes=settings.verification_block_minutes),
+    )
+    session.commit()
+    if not granted:
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
     codes = VerificationCodeRepository(session)
     active = codes.get_active_for_user(user.id, now)
     if active is None or not verify_password(code, active.code_hash):
-        user.verification_attempts += 1
-        if user.verification_attempts >= settings.verification_max_attempts:
-            user.verification_blocked_until = now + timedelta(
-                minutes=settings.verification_block_minutes
-            )
-        session.add(user)
-        session.commit()
+        # The block (if this was the last allowed attempt) was already set
+        # by the claim itself — nothing left to persist.
         raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
 
     active.consumed_at = now
-    user.is_verified = True
-    user.verification_attempts = 0
     session.add(active)
-    session.add(user)
+    users.mark_verified(user.id)
     session.commit()
 
 

@@ -4,7 +4,9 @@ table directly.
 
 from __future__ import annotations
 
-from sqlalchemy import func
+from datetime import datetime
+
+from sqlalchemy import case, func, update
 from sqlmodel import select
 
 from app.models import User
@@ -17,6 +19,75 @@ class UserRepository(BaseRepository[User]):
 
     def get_by_email(self, email: str) -> User | None:
         return self.session.exec(select(User).where(User.email == email)).first()
+
+    # Los tres metodos siguientes tocan los campos de verificacion con un
+    # UPDATE atomico (la base hace la aritmetica y la comprobacion), nunca
+    # con "leer el objeto, cambiar el atributo, guardar". Con lo segundo,
+    # N requests simultaneas leen el mismo valor viejo y se pisan entre si
+    # (lost update): 12 codigos incorrectos en paralelo dejaban el contador
+    # en 1 y la cuenta nunca se bloqueaba.
+    # synchronize_session=False: el objeto User que el servicio ya tenga
+    # cargado queda desactualizado a proposito; el servicio hace commit
+    # (que expira todo) antes de volver a mirarlo.
+
+    def reset_expired_verification_block(self, user_id: int, now: datetime) -> bool:
+        """Clear a verification block whose window already elapsed, and
+        reset the counter with it. Conditional on the block really being
+        over, so a stale caller can never wipe attempts claimed meanwhile.
+        True if a block was cleared.
+        """
+        result = self.session.execute(
+            update(User)
+            .where(
+                User.id == user_id,
+                User.verification_blocked_until.is_not(None),
+                User.verification_blocked_until <= now,
+            )
+            .values(verification_attempts=0, verification_blocked_until=None),
+            execution_options={"synchronize_session": False},
+        )
+        return result.rowcount == 1
+
+    def claim_verification_attempt(
+        self, user_id: int, *, max_attempts: int, blocked_until: datetime
+    ) -> bool:
+        """Atomically spend one verification attempt BEFORE the code is
+        checked. The WHERE clause is the gate: once the account is blocked
+        or the budget is spent, the UPDATE matches no row and the caller is
+        refused — so no number of simultaneous requests can ever get more
+        than `max_attempts` guesses. The attempt that spends the last one
+        also sets `blocked_until` in the same statement.
+        True if the attempt was granted.
+        """
+        result = self.session.execute(
+            update(User)
+            .where(
+                User.id == user_id,
+                User.verification_blocked_until.is_(None),
+                User.verification_attempts < max_attempts,
+            )
+            .values(
+                verification_attempts=User.verification_attempts + 1,
+                # CASE: bloquea solo si este intento agota el cupo.
+                verification_blocked_until=case(
+                    (User.verification_attempts + 1 >= max_attempts, blocked_until),
+                    else_=None,
+                ),
+            ),
+            execution_options={"synchronize_session": False},
+        )
+        return result.rowcount == 1
+
+    def mark_verified(self, user_id: int) -> None:
+        """Flag the account verified and clear every attempt/block trace
+        (including the block the last claimed attempt may have just set).
+        """
+        self.session.execute(
+            update(User)
+            .where(User.id == user_id)
+            .values(is_verified=True, verification_attempts=0, verification_blocked_until=None),
+            execution_options={"synchronize_session": False},
+        )
 
     def list_admin(
         self,
