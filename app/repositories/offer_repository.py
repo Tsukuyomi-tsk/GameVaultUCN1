@@ -13,9 +13,11 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+from sqlalchemy import update
 from sqlalchemy.sql.elements import ColumnElement
 from sqlmodel import Session, select
 
+from app.models.game import Game
 from app.models.offer import Offer
 from app.repositories.base import BaseRepository
 
@@ -70,6 +72,27 @@ class OfferRepository(BaseRepository[Offer]):
         if game_id is not None:
             statement = statement.where(Offer.game_id == game_id)
         return list(self.session.exec(statement).all())
+
+    def lock_game_offers(self, game_id: int) -> None:
+        """Serialize every offer write for this game until the transaction
+        ends.
+
+        "No two active offers overlap" is a rule about SEVERAL rows, so no
+        database constraint can enforce it: two admins creating the same
+        window at once both ran list_overlapping_active, both saw nothing,
+        and both inserted (8 simultaneous creations left 4 overlapping
+        active offers). The check and the write must not interleave, so
+        the caller takes this lock BEFORE checking. It is a no-op UPDATE of
+        the game row: writing is what takes the lock — SQLite locks the
+        whole database for the first writer and makes the rest wait for its
+        commit; PostgreSQL would lock just this row. Whoever waits then
+        runs its overlap check against data that already includes the
+        winner's offer, and is rejected with a 409.
+        """
+        self.session.execute(
+            update(Game).where(Game.id == game_id).values(id=Game.id),
+            execution_options={"synchronize_session": False},
+        )
 
     def list_overlapping_active(
         self,

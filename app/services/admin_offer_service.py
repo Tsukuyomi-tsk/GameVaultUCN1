@@ -64,6 +64,12 @@ def create_offer(session: Session, *, payload: OfferCreate) -> Offer:
     if games.get(payload.game_id) is None:
         raise NotFoundError("Juego no encontrado.")
 
+    # Se toma el lock de escritura del juego ANTES de chequear: si dos
+    # admins crean el mismo rango a la vez, el segundo espera aca hasta que
+    # el primero haga commit, y su chequeo ya ve la oferta del primero.
+    # Sin esto ambos chequeos pasaban y quedaban dos ofertas solapadas.
+    offers.lock_game_offers(payload.game_id)
+
     # Reutiliza la funcion privada de arriba para chequear solapamiento
     # contra las ofertas activas YA existentes de este juego.
     _check_no_overlap(
@@ -90,6 +96,16 @@ def create_offer(session: Session, *, payload: OfferCreate) -> Offer:
 
 def update_offer(session: Session, *, offer_id: int, payload: OfferUpdate) -> Offer:
     offers = OfferRepository(session)
+    offer = offers.get(offer_id)
+    if offer is None:
+        raise NotFoundError("Oferta no encontrada.")
+
+    # Mismo lock que en create_offer. Despues de tomarlo se refresca la
+    # oferta: mientras se esperaba el lock otro admin pudo haberla editado
+    # o borrado, y los valores "resueltos" de abajo no pueden salir de una
+    # lectura vieja.
+    offers.lock_game_offers(offer.game_id)
+    session.expire(offer)
     offer = offers.get(offer_id)
     if offer is None:
         raise NotFoundError("Oferta no encontrada.")
