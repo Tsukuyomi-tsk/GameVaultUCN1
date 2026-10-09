@@ -8,13 +8,18 @@ actually makes a suspension take effect on tokens issued before it.
 
 from __future__ import annotations
 
+import logging
+
 from sqlmodel import Session
 
 from app.core.exceptions import ConflictError, NotFoundError
+from app.core.logging import log_event
 from app.core.time import utcnow
 from app.models import User
 from app.models.enums import UserRole
 from app.repositories.user_repository import UserRepository
+
+logger = logging.getLogger(__name__)
 
 
 def list_users(
@@ -56,6 +61,14 @@ def suspend_user(session: Session, *, admin_id: int, user_id: int, reason: str) 
     users.add(user)
     session.commit()
     session.refresh(user)
+    log_event(
+        logger,
+        "user_suspended",
+        level=logging.WARNING,
+        admin_id=admin_id,
+        user_id=user.id,
+        reason=reason,
+    )
     # IMPORTANTE (ver el docstring del modulo): esto NO invalida ningun
     # token JWT ya emitido de forma directa. Lo que hace que la suspension
     # tenga efecto inmediato es que get_current_user (core/dependencies.py)
@@ -80,4 +93,5 @@ def reactivate_user(session: Session, *, user_id: int) -> User:
     users.add(user)
     session.commit()
     session.refresh(user)
+    log_event(logger, "user_reactivated", user_id=user.id)
     return user

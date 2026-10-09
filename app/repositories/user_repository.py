@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import case, func, update
+from sqlalchemy import case, delete, exists, func, update
 from sqlmodel import select
 
-from app.models import User
+from app.models import Order, User
 from app.models.enums import UserRole
 from app.repositories.base import BaseRepository
 
@@ -29,6 +29,41 @@ class UserRepository(BaseRepository[User]):
     # synchronize_session=False: el objeto User que el servicio ya tenga
     # cargado queda desactualizado a proposito; el servicio hace commit
     # (que expira todo) antes de volver a mirarlo.
+
+    def delete_stale_unverified(self, *, created_before: datetime) -> int:
+        """Hard-delete accounts that never verified and never bought anything.
+        Returns how many were deleted.
+
+        One DELETE statement, so the checks and the delete are atomic: an
+        account that verifies (or places an order) a millisecond earlier
+        simply no longer matches. The `NOT EXISTS orders` filter is
+        redundant with `orders.user_id ON DELETE RESTRICT` on purpose — the
+        database would refuse to delete a buyer anyway; this makes the job
+        skip them quietly instead of aborting the whole statement. Dependent
+        rows (verification codes, blacklist entries, carts, wishlist,
+        reviews) go with the user through their ON DELETE CASCADE.
+        """
+        # Subconsulta EXISTS: "existe al menos una orden de este usuario".
+        # Con el `~` de mas abajo se invierte: solo cuentas SIN ordenes.
+        has_orders = exists().where(Order.user_id == User.id)
+        result = self.session.execute(
+            # DELETE FROM users WHERE <todas las condiciones a la vez>.
+            delete(User).where(
+                # Solo cuentas que nunca se verificaron...
+                User.is_verified.is_(False),
+                # ...nunca un admin, aunque por algun motivo estuviera sin verificar...
+                User.role == UserRole.USER,
+                # ...creadas antes de la fecha limite (ya vencidas)...
+                User.created_at < created_before,
+                # ...y que no hayan comprado nada.
+                ~has_orders,
+            ),
+            # Un DELETE masivo no carga objetos en la sesion, asi que no hay
+            # nada que sincronizar (y se evita trabajo extra).
+            execution_options={"synchronize_session": False},
+        )
+        # rowcount = cuantas filas borro la base de datos.
+        return result.rowcount
 
     def reset_expired_verification_block(self, user_id: int, now: datetime) -> bool:
         """Clear a verification block whose window already elapsed, and

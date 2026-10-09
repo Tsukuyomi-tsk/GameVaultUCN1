@@ -3,9 +3,8 @@
 Every AppError subclass, every slowapi rate-limit rejection, and any
 genuinely unhandled exception are all turned into the same JSON envelope —
 the API never leaks a raw traceback or returns an inconsistent error shape.
-`request_id` is already part of that envelope (read from `request.state`)
-even though nothing sets it yet: Fase 7's logging middleware populates it
-without this module changing at all.
+`request_id` is part of that envelope (read from `request.state`):
+app.core.middleware.RequestContextMiddleware (Fase 7) is what populates it.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
 from app.core.exceptions import AppError
+from app.core.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +45,19 @@ def _error_response(
     # jsonable_encoder() recorre la estructura entera y convierte
     # cualquier valor "raro" (excepciones incluidas) a algo serializable
     # ANTES de que JSONResponse intente convertirlo a texto JSON.
+    request_id = getattr(request.state, "request_id", None)
     content = jsonable_encoder(
         {
             "error": {"code": code, "message": message, "details": details},
-            "request_id": getattr(request.state, "request_id", None),
+            "request_id": request_id,
         }
     )
-    return JSONResponse(status_code=status_code, content=content)
+    # El id tambien viaja en la cabecera. Para las respuestas normales ya lo
+    # agrega el middleware, pero la respuesta del 500 la fabrica
+    # ServerErrorMiddleware, que esta POR FUERA del middleware y no pasa por
+    # el: sin esto, el 500 no llevaria la cabecera.
+    headers = {"X-Request-ID": request_id} if request_id else None
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
@@ -68,13 +74,34 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 
 async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    # Evento de seguridad: muchas de estas desde una misma IP sobre /auth/*
+    # es el rastro tipico de un intento de fuerza bruta.
+    log_event(
+        logger,
+        "rate_limited",
+        level=logging.WARNING,
+        method=request.method,
+        path=request.url.path,
+        client_ip=request.client.host if request.client else None,
+    )
     return _error_response(
         429, "rate_limited", "Demasiadas solicitudes. Intenta de nuevo mas tarde.", request
     )
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    # extra: este handler corre FUERA del middleware (ServerErrorMiddleware
+    # esta por encima), cuando el ContextVar del request ya fue reseteado;
+    # por eso el request_id se pasa explicito desde request.state.
+    logger.exception(
+        "Unhandled exception on %s %s",
+        request.method,
+        request.url.path,
+        extra={
+            "event": "unhandled_exception",
+            "request_id": getattr(request.state, "request_id", None),
+        },
+    )
     return _error_response(500, "internal_error", "Ha ocurrido un error interno.", request)
 
 

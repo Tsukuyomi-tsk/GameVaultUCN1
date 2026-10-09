@@ -20,6 +20,7 @@ own database session because the request-scoped one is closed by then.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import datetime
 from decimal import Decimal
@@ -30,6 +31,7 @@ from sqlmodel import Session
 from app.core.database import engine
 from app.core.dependencies import ensure_owner_or_admin
 from app.core.exceptions import ConflictError, NotFoundError, ValidationError
+from app.core.logging import log_event
 from app.core.time import utcnow
 from app.integrations.pdf_client import generate_receipt_pdf
 from app.integrations.resend_client import send_receipt_email
@@ -40,6 +42,8 @@ from app.repositories.library_repository import LibraryRepository
 from app.repositories.offer_repository import compute_effective_price, get_active_offer_for_game
 from app.repositories.order_repository import OrderRepository
 from app.repositories.user_repository import UserRepository
+
+logger = logging.getLogger(__name__)
 
 # Cuantas veces se intenta generar un order_code que todavia no exista
 # antes de darse por vencido (ver _generate_unique_order_code).
@@ -74,6 +78,15 @@ def checkout(
     # timeout de red), se devuelve esa orden tal cual, sin tocar nada mas.
     existing = orders.get_by_idempotency(user_id=user.id, idempotency_key=idempotency_key)
     if existing is not None:
+        # Un reintento legitimo (no una compra nueva): se deja constancia
+        # para poder distinguir en los logs "compro" de "reintento".
+        log_event(
+            logger,
+            "checkout_replayed",
+            user_id=user.id,
+            order_code=existing.order_code,
+            path="sequential",
+        )
         return existing, orders.list_items(existing.id)
 
     # Se resuelve el carrito del usuario y se listan sus items (cada uno
@@ -178,18 +191,36 @@ def checkout(
         session.rollback()
         winning_order = orders.get_by_idempotency(user_id=user.id, idempotency_key=idempotency_key)
         if winning_order is not None:
+            log_event(
+                logger,
+                "checkout_replayed",
+                user_id=user.id,
+                order_code=winning_order.order_code,
+                path="concurrent",
+            )
             return winning_order, orders.list_items(winning_order.id)
         # Si no hay orden ganadora con ESTA clave, el choque fue contra
         # otro checkout del mismo usuario con una Idempotency-Key DISTINTA:
         # los dos intentaron comprar los mismos juegos y el UNIQUE
         # (user_id, game_id) de la biblioteca dejo pasar solo a uno. No hay
         # doble cobro; a este se le avisa con un 409 en vez de un 500.
+        log_event(logger, "checkout_conflict", level=logging.WARNING, user_id=user.id)
         raise ConflictError(
             "Otra solicitud de compra de tu carrito se proceso al mismo tiempo. "
             "Revisa tu historial de pedidos."
         ) from None
 
     session.refresh(order)
+    # La compra ya esta confirmada (commit hecho): este es EL evento de
+    # negocio mas importante del sistema.
+    log_event(
+        logger,
+        "checkout_completed",
+        user_id=user.id,
+        order_code=order.order_code,
+        total=str(order.total),
+        item_count=len(pending_items),
+    )
     return order, pending_items
 
 
@@ -248,6 +279,19 @@ def generate_and_send_receipt(order_id: int) -> None:
     the time this runs. Uses its own session, since the request's session
     is already closed here.
     """
+    # Esta funcion corre DESPUES de que la respuesta ya se envio: una
+    # excepcion aqui no tiene a quien llegarle (el cliente ya recibio su
+    # 201). Por eso se captura y se deja como evento de ERROR con el
+    # traceback, en vez de perderse en el log interno del servidor. La
+    # compra NO se deshace: la orden ya esta confirmada; solo falto la
+    # boleta/correo.
+    try:
+        _generate_and_send_receipt(order_id)
+    except Exception:
+        logger.exception("receipt_failed", extra={"event": "receipt_failed", "order_id": order_id})
+
+
+def _generate_and_send_receipt(order_id: int) -> None:
     # `with Session(engine) as session` abre una conexion NUEVA a la base
     # de datos — la sesion del request original ya se cerro cuando esta
     # funcion arranca (BackgroundTasks corre DESPUES de enviar la
@@ -258,6 +302,13 @@ def generate_and_send_receipt(order_id: int) -> None:
         if order is None:
             # Caso extremo (la orden se borro entre el checkout y que esta
             # tarea corriera) — no hay nada que hacer, se sale sin error.
+            return
+        # Un reintento idempotente del checkout (misma Idempotency-Key)
+        # tambien encola esta tarea. Si la boleta de esta orden ya se envio,
+        # no se regenera ni se vuelve a mandar el correo: reintentar una
+        # compra no debe llenarle la bandeja al cliente.
+        if order.receipt_sent_at is not None:
+            log_event(logger, "receipt_skipped", order_code=order.order_code, reason="already_sent")
             return
         items = orders.list_items(order.id)
         user = UserRepository(session).get(order.user_id)
@@ -277,3 +328,4 @@ def generate_and_send_receipt(order_id: int) -> None:
         order.receipt_sent_at = utcnow()
         session.add(order)
         session.commit()
+        log_event(logger, "receipt_sent", order_code=order.order_code, user_id=user.id)

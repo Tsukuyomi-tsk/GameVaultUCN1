@@ -20,6 +20,7 @@ caller enumerate registered emails or brute-force distinguish failure modes.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from datetime import timedelta
 
@@ -29,6 +30,7 @@ from sqlmodel import Session
 
 from app.core.config import settings
 from app.core.exceptions import ConflictError, ForbiddenError, UnauthorizedError
+from app.core.logging import log_event
 from app.core.security import (
     create_access_token,
     decode_access_token,
@@ -42,6 +44,8 @@ from app.models import TokenBlacklist, User, VerificationCode
 from app.repositories.token_blacklist_repository import TokenBlacklistRepository
 from app.repositories.user_repository import UserRepository
 from app.repositories.verification_code_repository import VerificationCodeRepository
+
+logger = logging.getLogger(__name__)
 
 _GENERIC_VERIFICATION_ERROR = "Codigo invalido o expirado."
 _GENERIC_BLOCKED_ERROR = "Demasiados intentos. Solicita un nuevo codigo mas tarde."
@@ -111,6 +115,7 @@ def register(session: Session, *, email: str, password: str, full_name: str) -> 
     _issue_verification_code(session, user)
     session.commit()
     session.refresh(user)
+    log_event(logger, "user_registered", user_id=user.id, email=user.email)
     return user
 
 
@@ -165,6 +170,7 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
     )
     session.commit()
     if not granted:
+        log_event(logger, "verification_blocked", level=logging.WARNING, user_id=user.id)
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
     codes = VerificationCodeRepository(session)
@@ -172,22 +178,52 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
     if active is None or not verify_password(code, active.code_hash):
         # The block (if this was the last allowed attempt) was already set
         # by the claim itself — nothing left to persist.
+        log_event(logger, "verification_failed", level=logging.WARNING, user_id=user.id)
         raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
 
     active.consumed_at = now
     session.add(active)
     users.mark_verified(user.id)
     session.commit()
+    log_event(logger, "account_verified", user_id=user.id)
 
 
 def login(session: Session, *, email: str, password: str) -> tuple[User, str]:
     users = UserRepository(session)
     user = users.get_by_email(email)
     if user is None or not verify_password(password, user.password_hash):
+        # El cliente recibe siempre el mismo mensaje generico (para no
+        # revelar que correos existen), pero el log SI distingue el motivo:
+        # sirve para detectar fuerza bruta sobre una cuenta real frente a
+        # simple ruido con correos inexistentes. Nunca se registra la
+        # contrasena enviada.
+        log_event(
+            logger,
+            "login_failed",
+            level=logging.WARNING,
+            email=email,
+            reason="unknown_email" if user is None else "wrong_password",
+        )
         raise UnauthorizedError("Credenciales invalidas.")
     if not user.is_verified:
+        log_event(
+            logger,
+            "login_failed",
+            level=logging.WARNING,
+            email=email,
+            user_id=user.id,
+            reason="unverified",
+        )
         raise UnauthorizedError("Debes verificar tu cuenta antes de iniciar sesion.")
     if user.is_suspended:
+        log_event(
+            logger,
+            "login_failed",
+            level=logging.WARNING,
+            email=email,
+            user_id=user.id,
+            reason="suspended",
+        )
         # 403, not 401: the credentials themselves are correct — matches
         # how app.core.dependencies.get_current_user treats suspension on
         # an already-authenticated request, so a client can rely on the
@@ -195,6 +231,7 @@ def login(session: Session, *, email: str, password: str) -> tuple[User, str]:
         raise ForbiddenError("Tu cuenta ha sido suspendida.")
 
     token = create_access_token(subject=str(user.id), role=user.role.value)
+    log_event(logger, "login_success", user_id=user.id)
     return user, token
 
 
@@ -233,3 +270,5 @@ def logout(session: Session, *, token: str) -> None:
         # A concurrent logout with the same token revoked the jti first:
         # the goal (token revoked) is already met, so stay a silent no-op.
         session.rollback()
+        return
+    log_event(logger, "logout", user_id=int(payload["sub"]))

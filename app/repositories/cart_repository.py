@@ -12,6 +12,8 @@ garantia si algo se escapa del chequeo.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import delete
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import select
@@ -133,6 +135,22 @@ class CartRepository(BaseRepository[Cart]):
             self.session.delete(item)
         self._touch(target_cart_id)
         self.session.flush()
+
+    def delete_abandoned_guest_carts(self, *, updated_before: datetime) -> int:
+        """Hard-delete guest carts (no user_id) untouched since the cutoff.
+        Returns how many. Their CartItem rows go with them through
+        cart_items.cart_id ON DELETE CASCADE. Carts that belong to a user
+        are never touched here — they are the user's, not abandoned state.
+        """
+        result = self.session.execute(
+            # user_id IS NULL => carrito de invitado (los de usuario nunca
+            # entran). updated_at < fecha limite => sin actividad reciente.
+            delete(Cart).where(Cart.user_id.is_(None), Cart.updated_at < updated_before),
+            # Borrado masivo: no hay objetos cargados que sincronizar.
+            execution_options={"synchronize_session": False},
+        )
+        # Cuantos carritos se borraron (para el log del job).
+        return result.rowcount
 
     def _touch(self, cart_id: int) -> None:
         """Bumps updated_at on the cart itself whenever its items change —
