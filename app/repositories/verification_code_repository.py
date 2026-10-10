@@ -47,15 +47,28 @@ class VerificationCodeRepository(BaseRepository[VerificationCode]):
         most one code is ever valid at a time — see
         app/services/auth_service.py.
         """
-        statement = select(VerificationCode).where(
-            VerificationCode.user_id == user_id,
-            VerificationCode.consumed_at.is_(None),
-            VerificationCode.invalidated_at.is_(None),
+        # Un solo UPDATE condicional (no "cargar los objetos, modificarlos y
+        # hacer flush"): si el job de limpieza borro la cuenta y sus codigos
+        # entre el SELECT y el flush, un flush de objetos cuya fila
+        # desaparecio lanza StaleDataError (un 500). El UPDATE, en cambio,
+        # simplemente no encuentra filas y no hace nada — el mismo enfoque
+        # que consume(). Es tambien una sola ida a la base de datos.
+        self.session.execute(
+            # UPDATE verification_codes SET invalidated_at = <ahora> WHERE
+            # el codigo es de este usuario y sigue abierto (ni consumido ni
+            # ya invalidado).
+            update(VerificationCode)
+            .where(
+                VerificationCode.user_id == user_id,
+                VerificationCode.consumed_at.is_(None),
+                VerificationCode.invalidated_at.is_(None),
+            )
+            .values(invalidated_at=now),
+            # Actualizacion masiva: los objetos que la sesion ya tuviera
+            # cargados no se sincronizan (nadie los vuelve a leer; el
+            # servicio hace commit, que los expira).
+            execution_options={"synchronize_session": False},
         )
-        for code in self.session.exec(statement).all():
-            code.invalidated_at = now
-            self.session.add(code)
-        self.session.flush()
 
     def consume(self, code_id: int, now: datetime) -> bool:
         """Mark a code consumed, only if it is still open. True if it was.
