@@ -51,6 +51,8 @@ def create_scheduler() -> BackgroundScheduler:
     #  - misfire_grace_time: cuanto retraso se tolera antes de descartar
     #    una ejecucion.
     #  - replace_existing=True: registrar dos veces el mismo id no duplica.
+    # timezone=UTC en CADA trigger: un trigger creado sin zona toma la zona
+    # LOCAL del equipo (no la del scheduler), asi que hay que pasarla aqui.
     common = {
         "max_instances": 1,
         "coalesce": True,
@@ -59,19 +61,19 @@ def create_scheduler() -> BackgroundScheduler:
     }
     scheduler.add_job(
         purge_unverified_accounts_job,
-        IntervalTrigger(hours=_UNVERIFIED_PURGE_EVERY_HOURS),
+        IntervalTrigger(hours=_UNVERIFIED_PURGE_EVERY_HOURS, timezone=UTC),
         id="purge_unverified_accounts",
         **common,
     )
     scheduler.add_job(
         purge_expired_blacklist_job,
-        IntervalTrigger(hours=settings.blacklist_purge_interval_hours),
+        IntervalTrigger(hours=settings.blacklist_purge_interval_hours, timezone=UTC),
         id="purge_expired_blacklist",
         **common,
     )
     scheduler.add_job(
         purge_abandoned_guest_carts_job,
-        IntervalTrigger(hours=_GUEST_CART_PURGE_EVERY_HOURS),
+        IntervalTrigger(hours=_GUEST_CART_PURGE_EVERY_HOURS, timezone=UTC),
         id="purge_abandoned_guest_carts",
         **common,
     )

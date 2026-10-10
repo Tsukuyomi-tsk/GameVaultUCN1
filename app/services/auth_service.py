@@ -25,7 +25,7 @@ import secrets
 from datetime import timedelta
 
 import jwt
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlmodel import Session
 
 from app.core.config import settings
@@ -63,16 +63,45 @@ def _hash_code(code: str) -> str:
     return hash_password(code)
 
 
-def _reset_expired_block(session: Session, user: User, now) -> None:
+def _reset_expired_block(session: Session, user: User, now) -> bool:
     """Clear a suspension window that has already elapsed, and reset the
     attempt counter with it — see the module docstring for why both must
     move together. Done as one conditional UPDATE (not by mutating `user`)
     so a stale read can't overwrite attempts claimed by a concurrent
     request; `user` is refreshed afterwards so callers see the result.
+    Returns False if the account vanished meanwhile (deleted by the
+    stale-account job between the caller's lookup and this refresh).
     """
     if UserRepository(session).reset_expired_verification_block(user.id, now):
         session.commit()
-        session.refresh(user)
+        try:
+            session.refresh(user)
+        except InvalidRequestError:
+            # refresh() de una fila que ya no existe: la cuenta fue borrada.
+            return False
+    return True
+
+
+def _log_verification_blocked(user_id: int, *, stage: str, reason: str) -> None:
+    """Security event: verification is (or just became) blocked for this
+    account. `stage` says which endpoint saw it ("verify" / "resend") and
+    `reason` why: "max_attempts_reached" is the transition into the block
+    (the attempt that spent the last try failed); "block_active" is a later
+    request being turned away while the block lasts.
+    """
+    # Recibe el id (no el objeto User) a proposito: tras un commit/rollback
+    # el objeto queda "expirado" y leer user.id dispararia una consulta, que
+    # falla con ObjectDeletedError si el job de limpieza borro la cuenta.
+    # WARNING: es senal de posible fuerza bruta sobre el codigo. Nunca se
+    # incluye el codigo que se intento.
+    log_event(
+        logger,
+        "verification_blocked",
+        level=logging.WARNING,
+        user_id=user_id,
+        stage=stage,
+        reason=reason,
+    )
 
 
 def _issue_verification_code(session: Session, user: User) -> str:
@@ -126,12 +155,15 @@ def resend_verification(session: Session, *, email: str) -> None:
         return  # generic no-op — see module docstring
 
     now = utcnow()
-    _reset_expired_block(session, user, now)
+    user_id = user.id
+    if not _reset_expired_block(session, user, now):
+        return  # la cuenta fue borrada mientras tanto: mismo no-op generico
     if user.verification_blocked_until is not None:
+        _log_verification_blocked(user_id, stage="resend", reason="block_active")
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
     codes = VerificationCodeRepository(session)
-    latest = codes.get_latest_for_user(user.id)
+    latest = codes.get_latest_for_user(user_id)
     if latest is not None:
         cooldown_ends = latest.created_at + timedelta(
             seconds=settings.verification_resend_cooldown_seconds
@@ -139,8 +171,16 @@ def resend_verification(session: Session, *, email: str) -> None:
         if now < cooldown_ends:
             raise UnauthorizedError("Espera antes de solicitar otro codigo.")
 
-    _issue_verification_code(session, user)
-    session.commit()
+    try:
+        _issue_verification_code(session, user)
+        session.commit()
+    except IntegrityError:
+        # La cuenta (no verificada y vencida) pudo ser borrada por el job de
+        # limpieza justo entre leerla y insertarle el codigo nuevo: la FK del
+        # codigo ya no encuentra a su usuario. Es el mismo caso "cuenta
+        # inexistente" del inicio de esta funcion: se deshace y se responde
+        # con el no-op generico, sin 500.
+        session.rollback()
 
 
 def verify_account(session: Session, *, email: str, code: str) -> None:
@@ -152,8 +192,14 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
         return
 
     now = utcnow()
-    _reset_expired_block(session, user, now)
+    # El id se copia a una variable local: despues de cada commit/rollback el
+    # objeto `user` queda expirado, y si el job de limpieza borro la cuenta
+    # entremedio, volver a leer `user.id` lanzaria ObjectDeletedError (500).
+    user_id = user.id
+    if not _reset_expired_block(session, user, now):
+        raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
     if user.verification_blocked_until is not None:
+        _log_verification_blocked(user_id, stage="verify", reason="block_active")
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
     # The attempt is spent BEFORE the code is checked, atomically, and
@@ -163,29 +209,54 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
     # the code is never even compared. A correct code wipes the counter
     # below, so honest users are unaffected by the order.
     users = UserRepository(session)
-    granted = users.claim_verification_attempt(
-        user.id,
+    attempts_used = users.claim_verification_attempt(
+        user_id,
         max_attempts=settings.verification_max_attempts,
         blocked_until=now + timedelta(minutes=settings.verification_block_minutes),
     )
     session.commit()
-    if not granted:
-        log_event(logger, "verification_blocked", level=logging.WARNING, user_id=user.id)
+    if attempts_used is None:
+        # Rechazado por el UPDATE atomico (otra request agoto el cupo antes,
+        # o la cuenta ya no existe): mismo evento que el rechazo temprano.
+        _log_verification_blocked(user_id, stage="verify", reason="block_active")
         raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
 
     codes = VerificationCodeRepository(session)
-    active = codes.get_active_for_user(user.id, now)
+    active = codes.get_active_for_user(user_id, now)
     if active is None or not verify_password(code, active.code_hash):
         # The block (if this was the last allowed attempt) was already set
         # by the claim itself — nothing left to persist.
-        log_event(logger, "verification_failed", level=logging.WARNING, user_id=user.id)
+        log_event(logger, "verification_failed", level=logging.WARNING, user_id=user_id)
+        if attempts_used >= settings.verification_max_attempts:
+            # Este fallo fue el que agoto el cupo: es la TRANSICION a
+            # "bloqueada" (el UPDATE del claim ya fijo blocked_until).
+            _log_verification_blocked(user_id, stage="verify", reason="max_attempts_reached")
         raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
 
-    active.consumed_at = now
-    session.add(active)
-    users.mark_verified(user.id)
+    # Codigo correcto. Se consume y se marca la cuenta con dos UPDATE
+    # condicionales (no con "cargar el objeto, modificarlo y guardarlo"):
+    # mientras bcrypt comparaba, el job de limpieza pudo borrar esta cuenta
+    # (y su codigo) por vencida, o una request concurrente pudo gastar el
+    # mismo codigo. En ambos casos el UPDATE no encuentra fila y devuelve
+    # False; guardar un objeto cuya fila desaparecio lanzaria StaleDataError
+    # (un 500).
+    consumed = codes.consume(active.id, now)
+    verified = consumed and users.mark_verified(user_id)
+    if not verified:
+        # Se deshace lo que haya alcanzado a escribirse (p. ej. el codigo
+        # consumido si la cuenta no estaba) y se responde con el error
+        # generico: la cuenta no queda "medio verificada" ni se recrea.
+        session.rollback()
+        log_event(
+            logger,
+            "verification_failed",
+            level=logging.WARNING,
+            user_id=user_id,
+            reason="account_or_code_gone",
+        )
+        raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
     session.commit()
-    log_event(logger, "account_verified", user_id=user.id)
+    log_event(logger, "account_verified", user_id=user_id)
 
 
 def login(session: Session, *, email: str, password: str) -> tuple[User, str]:

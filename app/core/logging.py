@@ -103,6 +103,12 @@ def configure_logging() -> None:
     # servicios: el entorno recoge stdout y lo envia donde corresponda).
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JSONFormatter())
+    # El nivel TAMBIEN va en el handler. El nivel de un logger solo filtra
+    # los registros que nacen en ese logger; un registro que un logger hijo
+    # (uvicorn, apscheduler) ya acepto sube a los handlers del padre SIN
+    # volver a comprobar el nivel del padre. El handler es el ultimo filtro:
+    # con LOG_LEVEL=ERROR, nada por debajo de ERROR sale, venga de donde venga.
+    handler.setLevel(settings.log_level)
 
     # Se reemplazan los handlers del logger raiz (en vez de agregar uno)
     # para que llamar esta funcion dos veces no duplique cada linea.
@@ -117,6 +123,9 @@ def configure_logging() -> None:
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers = []
         uvicorn_logger.propagate = True
+        # NOTSET: uvicorn fija su propio nivel INFO; al quitarlo, hereda el
+        # del logger raiz y LOG_LEVEL manda tambien sobre sus mensajes.
+        uvicorn_logger.setLevel(logging.NOTSET)
 
     # El log de acceso de uvicorn se apaga: nuestro middleware ya registra
     # cada request (con request_id y duracion), y dejarlo duplicaria todo.

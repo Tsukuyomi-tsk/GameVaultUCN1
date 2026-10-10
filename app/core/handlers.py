@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from slowapi.errors import RateLimitExceeded
 
+from app.core.config import settings
 from app.core.exceptions import AppError
 from app.core.logging import log_event
 
@@ -24,7 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 def _error_response(
-    status_code: int, code: str, message: str, request: Request, details: object = None
+    status_code: int,
+    code: str,
+    message: str,
+    request: Request,
+    details: object = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     # jsonable_encoder, not a raw dict straight into JSONResponse: Pydantic's
     # own ValidationError.errors() can embed the raw exception object in
@@ -56,8 +62,35 @@ def _error_response(
     # agrega el middleware, pero la respuesta del 500 la fabrica
     # ServerErrorMiddleware, que esta POR FUERA del middleware y no pasa por
     # el: sin esto, el 500 no llevaria la cabecera.
-    headers = {"X-Request-ID": request_id} if request_id else None
-    return JSONResponse(status_code=status_code, content=content, headers=headers)
+    headers = {"X-Request-ID": request_id} if request_id else {}
+    # extra_headers: cabeceras adicionales que solo algunos llamadores
+    # necesitan (hoy, CORS para el 500).
+    headers.update(extra_headers or {})
+    return JSONResponse(status_code=status_code, content=content, headers=headers or None)
+
+
+def _cors_headers_for(request: Request) -> dict[str, str]:
+    """CORS headers for the 500 response, which the CORS middleware never sees.
+
+    `ServerErrorMiddleware` builds that response OUTSIDE every user
+    middleware, CORSMiddleware included — so without these a browser app on
+    another origin cannot read the error body nor the X-Request-ID (it
+    would show an opaque network error). Mirrors the CORSMiddleware config
+    in main.py (credentials stay off, so "*" is a valid answer).
+    """
+    # Solo hay cabeceras CORS si el navegador mando Origin (peticion cross-origin).
+    origin = request.headers.get("origin")
+    allowed = settings.cors_origins_list
+    if not origin or not ("*" in allowed or origin in allowed):
+        return {}
+    return {
+        # Con "*" se responde "*"; con una lista, el origen exacto que pidio.
+        "Access-Control-Allow-Origin": "*" if "*" in allowed else origin,
+        # Sin esto el navegador no deja a JavaScript leer X-Request-ID.
+        "Access-Control-Expose-Headers": "X-Request-ID",
+        # La respuesta cambia segun el Origin: los caches deben tenerlo en cuenta.
+        "Vary": "Origin",
+    }
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
@@ -102,7 +135,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
             "request_id": getattr(request.state, "request_id", None),
         },
     )
-    return _error_response(500, "internal_error", "Ha ocurrido un error interno.", request)
+    return _error_response(
+        500,
+        "internal_error",
+        "Ha ocurrido un error interno.",
+        request,
+        extra_headers=_cors_headers_for(request),
+    )
 
 
 def register_exception_handlers(app: FastAPI) -> None:

@@ -32,6 +32,12 @@ engine = create_engine(
     # controla LOG_LEVEL=DEBUG a traves del logger "sqlalchemy.engine"
     # (ver app/core/logging.py), para que salgan en el mismo formato JSON.
     echo=False,
+    # hide_parameters=True: ni los logs de SQL (LOG_LEVEL=DEBUG) ni los
+    # mensajes de error de SQLAlchemy incluyen los VALORES de los parametros.
+    # Sin esto, buscar un carrito por session_token escribia ese token (una
+    # credencial de invitado) en el log. Se siguen viendo la sentencia y los
+    # tiempos, solo no los datos.
+    hide_parameters=True,
     connect_args={"check_same_thread": False} if _is_sqlite else {},
 )
 

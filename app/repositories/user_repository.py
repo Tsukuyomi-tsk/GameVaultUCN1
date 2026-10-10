@@ -85,14 +85,16 @@ class UserRepository(BaseRepository[User]):
 
     def claim_verification_attempt(
         self, user_id: int, *, max_attempts: int, blocked_until: datetime
-    ) -> bool:
+    ) -> int | None:
         """Atomically spend one verification attempt BEFORE the code is
         checked. The WHERE clause is the gate: once the account is blocked
         or the budget is spent, the UPDATE matches no row and the caller is
         refused — so no number of simultaneous requests can ever get more
         than `max_attempts` guesses. The attempt that spends the last one
         also sets `blocked_until` in the same statement.
-        True if the attempt was granted.
+        Returns the number of attempts used INCLUDING this one when granted
+        (so the caller can tell that this attempt spent the last one), or
+        None if the attempt was refused.
         """
         result = self.session.execute(
             update(User)
@@ -108,21 +110,32 @@ class UserRepository(BaseRepository[User]):
                     (User.verification_attempts + 1 >= max_attempts, blocked_until),
                     else_=None,
                 ),
-            ),
+            )
+            # RETURNING devuelve, en el mismo statement atomico, el valor del
+            # contador DESPUES de sumar: asi se sabe con exactitud si ESTE
+            # intento fue el que agoto el cupo (sin releer y sin carreras).
+            .returning(User.verification_attempts),
             execution_options={"synchronize_session": False},
         )
-        return result.rowcount == 1
+        # Una fila => intento concedido (se devuelve el contador); ninguna
+        # fila => rechazado (bloqueada, cupo agotado o la cuenta ya no existe).
+        row = result.first()
+        return row[0] if row is not None else None
 
-    def mark_verified(self, user_id: int) -> None:
+    def mark_verified(self, user_id: int) -> bool:
         """Flag the account verified and clear every attempt/block trace
         (including the block the last claimed attempt may have just set).
+        True if the account still existed — False means it was deleted
+        meanwhile (e.g. by the stale-account job) and nothing was updated.
         """
-        self.session.execute(
+        result = self.session.execute(
             update(User)
             .where(User.id == user_id)
             .values(is_verified=True, verification_attempts=0, verification_blocked_until=None),
             execution_options={"synchronize_session": False},
         )
+        # rowcount == 1 => la cuenta existia y quedo verificada.
+        return result.rowcount == 1
 
     def list_admin(
         self,
