@@ -25,9 +25,17 @@ class AppError(Exception):
     status_code: int = 400
     code: str = "app_error"
 
-    def __init__(self, message: str, *, details: dict | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        details: dict | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.message = message
         self.details = details
+        # Cabeceras HTTP extra para la respuesta de error (p. ej. Retry-After).
+        self.headers = headers
         super().__init__(message)
 
 
@@ -75,8 +83,9 @@ class ConflictError(AppError):
 
 
 class RateLimitError(AppError):
-    """Too many requests. Normally raised by slowapi itself, not by
-    application code — kept here so its response shares the same envelope.
+    """Too many requests. Raised by slowapi itself for the per-IP limit, and
+    by application code for per-account limits (e.g. the verification block);
+    pass `headers={"Retry-After": "<seconds>"}` to tell the client when to retry.
     """
 
     status_code = 429

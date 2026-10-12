@@ -15,6 +15,7 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _EXAMPLE_SECRET_KEY = "change-this-secret-key-in-your-own-env-file"
+_EXAMPLE_ADMIN_PASSWORD = "ChangeMe123!"
 
 
 class Settings(BaseSettings):
@@ -62,7 +63,7 @@ class Settings(BaseSettings):
     # --- Seeder ---
     seed_on_startup: bool = True
     admin_email: str = "admin@gamevault.ucn.cl"
-    admin_password: str = "ChangeMe123!"
+    admin_password: str = _EXAMPLE_ADMIN_PASSWORD
     admin_full_name: str = "Administrador GameVault"
 
     # --- Resend (transactional email) ---
@@ -116,11 +117,24 @@ class Settings(BaseSettings):
             missing.append("CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET")
         if self.secret_key == _EXAMPLE_SECRET_KEY:
             missing.append("SECRET_KEY (usando el valor de ejemplo)")
+        # El seeder crea al admin con ADMIN_PASSWORD en cada arranque: con el
+        # valor de ejemplo, cualquiera que lea el repo entra como admin.
+        if self.admin_password == _EXAMPLE_ADMIN_PASSWORD:
+            missing.append("ADMIN_PASSWORD (usando el valor de ejemplo)")
+        # "*" permite que cualquier sitio web llame a la API desde un navegador.
+        if "*" in self.cors_origins_list:
+            missing.append("CORS_ORIGINS (no puede ser '*', lista los origenes permitidos)")
+        if self.debug:
+            missing.append("DEBUG (debe ser false)")
+        # El seeder siembra datos de demo (incluidos usuarios con contrasena
+        # publica): en produccion se ejecuta solo a mano, nunca al arrancar.
+        if self.seed_on_startup:
+            missing.append("SEED_ON_STARTUP (debe ser false)")
 
         if missing:
             raise ValueError(
-                "ENVIRONMENT=production requiere credenciales reales. "
-                f"Faltan o son de ejemplo: {'; '.join(missing)}"
+                "ENVIRONMENT=production requiere una configuracion segura. "
+                f"Faltan, son de ejemplo o no son validas: {'; '.join(missing)}"
             )
         return self
 

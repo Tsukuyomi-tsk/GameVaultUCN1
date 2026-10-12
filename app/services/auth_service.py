@@ -13,23 +13,28 @@ The "one live code at a time" invariant lives entirely here (see
   counter would stay pinned at the maximum forever, and the first attempt
   after the block expired would immediately re-trigger it.
 
-Resend and verify give the same generic response whether the account
-exists, is already verified, or the code was wrong — never enough to let a
-caller enumerate registered emails or brute-force distinguish failure modes.
+Register, resend and verify give the same generic response whether the
+account exists, is already verified, or the code was wrong — never enough to
+let a caller enumerate registered emails or brute-force distinguish failure
+modes. Login also hides which emails exist, in its message AND its timing
+(a dummy bcrypt check runs when the email is unknown). The one deliberate
+exception is `verify` turning away a BLOCKED account with 429: it needs
+five wrong attempts first, and the rate limit caps those per IP.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import jwt
 from sqlalchemy.exc import IntegrityError, InvalidRequestError
 from sqlmodel import Session
 
 from app.core.config import settings
-from app.core.exceptions import ConflictError, ForbiddenError, UnauthorizedError
+from app.core.exceptions import ForbiddenError, RateLimitError, UnauthorizedError
 from app.core.logging import log_event
 from app.core.security import (
     create_access_token,
@@ -49,6 +54,12 @@ logger = logging.getLogger(__name__)
 
 _GENERIC_VERIFICATION_ERROR = "Codigo invalido o expirado."
 _GENERIC_BLOCKED_ERROR = "Demasiados intentos. Solicita un nuevo codigo mas tarde."
+
+# Hash de una contrasena que nadie usa. Cuando el login recibe un correo que
+# no existe se compara contra este hash para gastar el mismo tiempo de bcrypt
+# que con un correo real; sin eso, la diferencia de tiempo delata que cuentas
+# existen. Se calcula una vez al importar (mismo costo que los hashes reales).
+_DUMMY_PASSWORD_HASH = hash_password("contrasena-que-nadie-usa-1")
 
 
 def _generate_numeric_code() -> str:
@@ -80,6 +91,19 @@ def _reset_expired_block(session: Session, user: User, now) -> bool:
             # refresh() de una fila que ya no existe: la cuenta fue borrada.
             return False
     return True
+
+
+def _blocked_error(blocked_until: datetime | None, now: datetime) -> RateLimitError:
+    """429 for an account whose verification is blocked, with Retry-After.
+
+    `blocked_until` is None when the block was detected by the atomic claim
+    (which doesn't return the date): the full block window is the upper bound.
+    """
+    if blocked_until is not None:
+        seconds = max(1, math.ceil((blocked_until - now).total_seconds()))
+    else:
+        seconds = settings.verification_block_minutes * 60
+    return RateLimitError(_GENERIC_BLOCKED_ERROR, headers={"Retry-After": str(seconds)})
 
 
 def _log_verification_blocked(user_id: int, *, stage: str, reason: str) -> None:
@@ -121,15 +145,20 @@ def _issue_verification_code(session: Session, user: User) -> str:
     return plain_code
 
 
-def register(session: Session, *, email: str, password: str, full_name: str) -> User:
+def register(session: Session, *, email: str, password: str, full_name: str) -> None:
     """Create the account and send its first verification code.
 
-    Uniqueness is the only check that needs to live here rather than in
-    the request schema — it needs a database read.
+    The caller gets the SAME answer whether the email was new or already
+    registered (nothing is returned; the router sends a fixed message), so
+    this endpoint can't be used to find out who has an account. For an
+    existing email nothing is created or sent, and the same amount of bcrypt
+    work is spent so response time doesn't give it away either.
     """
     users = UserRepository(session)
-    if users.get_by_email(email) is not None:
-        raise ConflictError("Ya existe una cuenta con este correo.")
+    existing = users.get_by_email(email)
+    if existing is not None:
+        _ignore_duplicate_registration(password, user_id=existing.id)
+        return
 
     try:
         user = users.add(
@@ -138,14 +167,26 @@ def register(session: Session, *, email: str, password: str, full_name: str) -> 
     except IntegrityError:
         # Two requests with the same email both passed the check above; the
         # UNIQUE index on users.email arbitrated and this one lost. Same
-        # answer as the sequential duplicate, not a 500.
+        # answer as the sequential duplicate, not a 500 nor a 409.
         session.rollback()
-        raise ConflictError("Ya existe una cuenta con este correo.") from None
+        _ignore_duplicate_registration(password, user_id=None)
+        return
     _issue_verification_code(session, user)
     session.commit()
     session.refresh(user)
     log_event(logger, "user_registered", user_id=user.id, email=user.email)
-    return user
+
+
+def _ignore_duplicate_registration(password: str, *, user_id: int | None) -> None:
+    """Spend the bcrypt work a real registration would (password hash + code
+    hash) and log the attempt; creates and sends nothing.
+    """
+    hash_password(password)
+    _hash_code(_generate_numeric_code())
+    # INFO: un correo repetido es normal (alguien que olvido que ya tenia
+    # cuenta); lo que importa para detectar abuso es el volumen de estos
+    # eventos. No se registra la contrasena.
+    log_event(logger, "register_duplicate_ignored", user_id=user_id)
 
 
 def resend_verification(session: Session, *, email: str) -> None:
@@ -160,7 +201,9 @@ def resend_verification(session: Session, *, email: str) -> None:
         return  # la cuenta fue borrada mientras tanto: mismo no-op generico
     if user.verification_blocked_until is not None:
         _log_verification_blocked(user_id, stage="resend", reason="block_active")
-        raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
+        # Respuesta generica, igual que para una cuenta inexistente: un 429
+        # solo para cuentas reales delataria que el correo esta registrado.
+        return
 
     codes = VerificationCodeRepository(session)
     latest = codes.get_latest_for_user(user_id)
@@ -169,7 +212,16 @@ def resend_verification(session: Session, *, email: str) -> None:
             seconds=settings.verification_resend_cooldown_seconds
         )
         if now < cooldown_ends:
-            raise UnauthorizedError("Espera antes de solicitar otro codigo.")
+            # Mismo criterio que el bloqueo: no se envia otro codigo, pero la
+            # respuesta es la generica (un error aqui delataria la cuenta).
+            log_event(
+                logger,
+                "verification_resend_skipped",
+                level=logging.INFO,
+                user_id=user_id,
+                reason="cooldown",
+            )
+            return
 
     try:
         _issue_verification_code(session, user)
@@ -200,7 +252,7 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
         raise UnauthorizedError(_GENERIC_VERIFICATION_ERROR)
     if user.verification_blocked_until is not None:
         _log_verification_blocked(user_id, stage="verify", reason="block_active")
-        raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
+        raise _blocked_error(user.verification_blocked_until, now)
 
     # The attempt is spent BEFORE the code is checked, atomically, and
     # committed right away (short transaction: bcrypt below is slow and
@@ -219,7 +271,7 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
         # Rechazado por el UPDATE atomico (otra request agoto el cupo antes,
         # o la cuenta ya no existe): mismo evento que el rechazo temprano.
         _log_verification_blocked(user_id, stage="verify", reason="block_active")
-        raise UnauthorizedError(_GENERIC_BLOCKED_ERROR)
+        raise _blocked_error(None, now)
 
     codes = VerificationCodeRepository(session)
     active = codes.get_active_for_user(user_id, now)
@@ -262,7 +314,12 @@ def verify_account(session: Session, *, email: str, code: str) -> None:
 def login(session: Session, *, email: str, password: str) -> tuple[User, str]:
     users = UserRepository(session)
     user = users.get_by_email(email)
-    if user is None or not verify_password(password, user.password_hash):
+    # Siempre se ejecuta UNA comparacion bcrypt, exista o no el correo: asi el
+    # tiempo de respuesta no distingue "correo inexistente" de "contrasena
+    # incorrecta" (ver _DUMMY_PASSWORD_HASH).
+    password_hash = user.password_hash if user is not None else _DUMMY_PASSWORD_HASH
+    password_ok = verify_password(password, password_hash)
+    if user is None or not password_ok:
         # El cliente recibe siempre el mismo mensaje generico (para no
         # revelar que correos existen), pero el log SI distingue el motivo:
         # sirve para detectar fuerza bruta sobre una cuenta real frente a

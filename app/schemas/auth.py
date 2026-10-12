@@ -8,14 +8,22 @@ duplicate the same rule.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from typing import Annotated
+
+from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
 
 from app.core.security import BCRYPT_MAX_PASSWORD_BYTES
 from app.schemas.user import UserRead
 
+# EmailStr solo pasa a minusculas el dominio ("Ana@X.com" -> "Ana@x.com"); la
+# parte local se respeta. Sin normalizarla, "Ana@x.com" y "ana@x.com" serian
+# dos cuentas distintas para la base de datos. Todo correo que entra por un
+# schema de auth se guarda y se busca en minusculas.
+NormalizedEmail = Annotated[EmailStr, AfterValidator(str.lower)]
+
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
 
@@ -36,21 +44,22 @@ class RegisterRequest(BaseModel):
 
 
 class RegisterResponse(BaseModel):
+    # Sin datos de usuario a proposito: la respuesta es identica exista o no
+    # el correo, para que registrar no sirva para averiguar quien tiene cuenta.
     message: str
-    user: UserRead
 
 
 class VerifyRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     code: str = Field(min_length=4, max_length=10)
 
 
 class ResendVerificationRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: NormalizedEmail
     password: str
 
 

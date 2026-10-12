@@ -18,7 +18,12 @@ class UserRepository(BaseRepository[User]):
     model = User
 
     def get_by_email(self, email: str) -> User | None:
-        return self.session.exec(select(User).where(User.email == email)).first()
+        # lower() en ambos lados: los schemas ya normalizan a minusculas, pero
+        # una cuenta guardada antes de esa normalizacion (con mayusculas) debe
+        # seguir encontrandose y tambien contar como correo ya registrado.
+        return self.session.exec(
+            select(User).where(func.lower(User.email) == email.lower())
+        ).first()
 
     # Los tres metodos siguientes tocan los campos de verificacion con un
     # UPDATE atomico (la base hace la aritmetica y la comprobacion), nunca

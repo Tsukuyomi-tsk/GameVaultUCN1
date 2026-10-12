@@ -37,12 +37,12 @@ SessionDep = Annotated[Session, Depends(get_session)]
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(settings.rate_limit_auth)
 def register(request: Request, payload: RegisterRequest, session: SessionDep) -> RegisterResponse:
-    user = auth_service.register(
+    auth_service.register(
         session, email=payload.email, password=payload.password, full_name=payload.full_name
     )
+    # Mensaje fijo: es el mismo exista o no ya una cuenta con ese correo.
     return RegisterResponse(
-        message="Cuenta creada. Revisa tu correo para verificarla.",
-        user=UserRead.model_validate(user),
+        message="Si el correo puede registrarse, te enviamos un codigo para verificar la cuenta."
     )
 
 
@@ -59,7 +59,12 @@ def resend_verification(
     request: Request, payload: ResendVerificationRequest, session: SessionDep
 ) -> MessageResponse:
     auth_service.resend_verification(session, email=payload.email)
-    return MessageResponse(message="Si la cuenta existe, se envio un nuevo codigo.")
+    return MessageResponse(
+        message=(
+            "Si la cuenta existe y esta pendiente de verificacion, se envio un nuevo codigo. "
+            "Si no llega, espera un minuto antes de pedirlo otra vez."
+        )
+    )
 
 
 @router.post("/login", response_model=LoginResponse)

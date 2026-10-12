@@ -282,7 +282,24 @@ def _seed_reviews(
 
 
 def run_seeders() -> None:
-    """Populate the database with demo data. Safe to call on every startup."""
+    """Populate the database with demo data. Safe to call on every startup.
+
+    In production only the admin account is created: the demo users share a
+    public password (SEED_USER_PASSWORD) and the demo catalog is not real data.
+    """
+    if settings.environment == "production":
+        with Session(engine) as session:
+            _get_or_create_user(
+                session,
+                email=settings.admin_email,
+                full_name=settings.admin_full_name,
+                password=settings.admin_password,
+                role=UserRole.ADMIN,
+            )
+            session.commit()
+        logger.info("Seeder (produccion): solo la cuenta de administrador.")
+        return
+
     with Session(engine) as session:
         categories_by_slug = _seed_categories(session)
         games_by_slug = _seed_games(session, categories_by_slug)
