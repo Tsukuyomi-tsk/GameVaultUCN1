@@ -23,6 +23,12 @@ ignore = [
     "E501", # el largo de linea lo controla ruff-format, no el linter
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# main.py llama configure_logging() ANTES de importar los routers: varios
+# modulos (resend_client, cloudinary_client) emiten su aviso de "modo dev" al
+# importarse, y ese aviso tiene que salir ya en formato JSON.
+"app/main.py" = ["E402"]
+
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 

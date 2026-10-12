@@ -6,10 +6,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import case, func, update
+from sqlalchemy import case, delete, exists, func, update
 from sqlmodel import select
 
-from app.models import User
+from app.models import Order, User
 from app.models.enums import UserRole
 from app.repositories.base import BaseRepository
 
@@ -29,6 +29,41 @@ class UserRepository(BaseRepository[User]):
     # synchronize_session=False: el objeto User que el servicio ya tenga
     # cargado queda desactualizado a proposito; el servicio hace commit
     # (que expira todo) antes de volver a mirarlo.
+
+    def delete_stale_unverified(self, *, created_before: datetime) -> int:
+        """Hard-delete accounts that never verified and never bought anything.
+        Returns how many were deleted.
+
+        One DELETE statement, so the checks and the delete are atomic: an
+        account that verifies (or places an order) a millisecond earlier
+        simply no longer matches. The `NOT EXISTS orders` filter is
+        redundant with `orders.user_id ON DELETE RESTRICT` on purpose — the
+        database would refuse to delete a buyer anyway; this makes the job
+        skip them quietly instead of aborting the whole statement. Dependent
+        rows (verification codes, blacklist entries, carts, wishlist,
+        reviews) go with the user through their ON DELETE CASCADE.
+        """
+        # Subconsulta EXISTS: "existe al menos una orden de este usuario".
+        # Con el `~` de mas abajo se invierte: solo cuentas SIN ordenes.
+        has_orders = exists().where(Order.user_id == User.id)
+        result = self.session.execute(
+            # DELETE FROM users WHERE <todas las condiciones a la vez>.
+            delete(User).where(
+                # Solo cuentas que nunca se verificaron...
+                User.is_verified.is_(False),
+                # ...nunca un admin, aunque por algun motivo estuviera sin verificar...
+                User.role == UserRole.USER,
+                # ...creadas antes de la fecha limite (ya vencidas)...
+                User.created_at < created_before,
+                # ...y que no hayan comprado nada.
+                ~has_orders,
+            ),
+            # Un DELETE masivo no carga objetos en la sesion, asi que no hay
+            # nada que sincronizar (y se evita trabajo extra).
+            execution_options={"synchronize_session": False},
+        )
+        # rowcount = cuantas filas borro la base de datos.
+        return result.rowcount
 
     def reset_expired_verification_block(self, user_id: int, now: datetime) -> bool:
         """Clear a verification block whose window already elapsed, and
@@ -50,14 +85,16 @@ class UserRepository(BaseRepository[User]):
 
     def claim_verification_attempt(
         self, user_id: int, *, max_attempts: int, blocked_until: datetime
-    ) -> bool:
+    ) -> int | None:
         """Atomically spend one verification attempt BEFORE the code is
         checked. The WHERE clause is the gate: once the account is blocked
         or the budget is spent, the UPDATE matches no row and the caller is
         refused — so no number of simultaneous requests can ever get more
         than `max_attempts` guesses. The attempt that spends the last one
         also sets `blocked_until` in the same statement.
-        True if the attempt was granted.
+        Returns the number of attempts used INCLUDING this one when granted
+        (so the caller can tell that this attempt spent the last one), or
+        None if the attempt was refused.
         """
         result = self.session.execute(
             update(User)
@@ -73,21 +110,32 @@ class UserRepository(BaseRepository[User]):
                     (User.verification_attempts + 1 >= max_attempts, blocked_until),
                     else_=None,
                 ),
-            ),
+            )
+            # RETURNING devuelve, en el mismo statement atomico, el valor del
+            # contador DESPUES de sumar: asi se sabe con exactitud si ESTE
+            # intento fue el que agoto el cupo (sin releer y sin carreras).
+            .returning(User.verification_attempts),
             execution_options={"synchronize_session": False},
         )
-        return result.rowcount == 1
+        # Una fila => intento concedido (se devuelve el contador); ninguna
+        # fila => rechazado (bloqueada, cupo agotado o la cuenta ya no existe).
+        row = result.first()
+        return row[0] if row is not None else None
 
-    def mark_verified(self, user_id: int) -> None:
+    def mark_verified(self, user_id: int) -> bool:
         """Flag the account verified and clear every attempt/block trace
         (including the block the last claimed attempt may have just set).
+        True if the account still existed — False means it was deleted
+        meanwhile (e.g. by the stale-account job) and nothing was updated.
         """
-        self.session.execute(
+        result = self.session.execute(
             update(User)
             .where(User.id == user_id)
             .values(is_verified=True, verification_attempts=0, verification_blocked_until=None),
             execution_options={"synchronize_session": False},
         )
+        # rowcount == 1 => la cuenta existia y quedo verificada.
+        return result.rowcount == 1
 
     def list_admin(
         self,

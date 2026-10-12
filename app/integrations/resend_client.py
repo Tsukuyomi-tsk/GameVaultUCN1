@@ -22,6 +22,7 @@ from pathlib import Path
 import resend
 
 from app.core.config import settings
+from app.core.logging import log_event
 from app.core.time import utcnow
 from app.models import Order
 
@@ -50,7 +51,17 @@ def _write_to_outbox(*, to_email: str, subject: str, html: str) -> Path:
         f"Generado: {utcnow().isoformat()} -->\n"
     )
     path.write_text(header + html, encoding="utf-8")
-    logger.warning("[MODO DEV] Correo simulado para %s guardado en %s", to_email, path)
+    # Evento estructurado ademas del aviso visible: "email_simulated" deja
+    # claro en los logs que NO salio ningun correo real (ver el contrato del
+    # fallback en el docstring del modulo).
+    log_event(
+        logger,
+        "email_simulated",
+        level=logging.WARNING,
+        to_email=to_email,
+        subject=subject,
+        outbox_path=str(path),
+    )
     return path
 
 
@@ -59,14 +70,24 @@ def _send(*, to_email: str, subject: str, html: str) -> None:
         _write_to_outbox(to_email=to_email, subject=subject, html=html)
         return
 
-    resend.Emails.send(
-        {
-            "from": settings.resend_from_email,
-            "to": [to_email],
-            "subject": subject,
-            "html": html,
-        }
-    )
+    try:
+        resend.Emails.send(
+            {
+                "from": settings.resend_from_email,
+                "to": [to_email],
+                "subject": subject,
+                "html": html,
+            }
+        )
+    except Exception:
+        # Se registra y se RE-LANZA: el contrato del fallback prohibe
+        # enmascarar un fallo real del envio (no se cae al outbox).
+        logger.exception(
+            "email_failed",
+            extra={"event": "email_failed", "to_email": to_email, "subject": subject},
+        )
+        raise
+    log_event(logger, "email_sent", to_email=to_email, subject=subject)
 
 
 def send_verification_email(*, to_email: str, code: str) -> None:

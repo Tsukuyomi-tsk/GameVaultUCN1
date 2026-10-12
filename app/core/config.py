@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     environment: Literal["development", "production"] = "development"
     debug: bool = True
     cors_origins: str = "*"
+    # Nivel minimo de los logs JSON (Fase 7). Con DEBUG ademas se imprimen
+    # las sentencias SQL (ver app/core/logging.py).
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
     # --- Database ---
     database_url: str = "sqlite:///./gamevault.db"

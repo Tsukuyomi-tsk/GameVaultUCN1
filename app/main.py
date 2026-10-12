@@ -1,9 +1,7 @@
 """GameVault UCN — FastAPI application entrypoint.
 
-Remaining routers and the APScheduler jobs are wired in as later phases
-land (see the project plan). The lifespan already carries the seeder —
-Fase 7 extends this same function to also start the scheduler, rather than
-adding a second one.
+The lifespan carries both start-up tasks: the seeder and (Fase 7) the
+APScheduler jobs, in this same function rather than a second one.
 """
 
 from __future__ import annotations
@@ -17,8 +15,18 @@ from fastapi.staticfiles import StaticFiles
 from slowapi.middleware import SlowAPIMiddleware
 
 from app.core.config import settings
+from app.core.logging import configure_logging
+
+# Debe correr antes de importar el resto de la app (por eso el E402 esta
+# permitido para este archivo en pyproject.toml): instala el formato JSON en
+# el logger raiz (ver app/core/logging.py), de modo que hasta los avisos que
+# los modulos emiten AL IMPORTARSE salgan ya en JSON.
+configure_logging()
+
 from app.core.handlers import register_exception_handlers
+from app.core.middleware import REQUEST_ID_HEADER, RequestContextMiddleware
 from app.core.rate_limit import limiter
+from app.jobs.scheduler import start_scheduler
 from app.routers.admin_categories import router as admin_categories_router
 from app.routers.admin_games import router as admin_games_router
 from app.routers.admin_offers import router as admin_offers_router
@@ -42,7 +50,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         from app.seeders.run import run_seeders
 
         run_seeders()
-    yield
+
+    # El scheduler arranca AQUI (dentro del lifespan) y no al importar el
+    # modulo: asi solo corre cuando la app realmente esta sirviendo, y
+    # SCHEDULER_ENABLED=false lo apaga (necesario si se lanzan varios
+    # workers, o jobs duplicados correrian N veces). Devuelve None si esta
+    # apagado.
+    scheduler = start_scheduler()
+    try:
+        yield
+    finally:
+        # Al apagar la app se detiene el scheduler; wait=False para no
+        # bloquear el cierre esperando a un job en curso.
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
@@ -65,7 +86,15 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Un navegador solo deja leer a JavaScript las cabeceras de respuesta
+    # "seguras"; X-Request-ID hay que exponerla explicitamente.
+    expose_headers=[REQUEST_ID_HEADER],
 )
+# Se agrega ULTIMO a proposito: en Starlette el ultimo middleware agregado
+# es el mas externo, asi que el request_id existe antes que cualquier otro
+# middleware o ruta, y el log de acceso cubre tambien lo rechazado por CORS
+# o por el rate limit.
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(auth_router)
 app.include_router(catalog_router)

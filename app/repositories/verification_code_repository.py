@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from sqlalchemy import update
 from sqlmodel import select
 
 from app.models.verification_code import VerificationCode
@@ -46,12 +47,53 @@ class VerificationCodeRepository(BaseRepository[VerificationCode]):
         most one code is ever valid at a time — see
         app/services/auth_service.py.
         """
-        statement = select(VerificationCode).where(
-            VerificationCode.user_id == user_id,
-            VerificationCode.consumed_at.is_(None),
-            VerificationCode.invalidated_at.is_(None),
+        # Un solo UPDATE condicional (no "cargar los objetos, modificarlos y
+        # hacer flush"): si el job de limpieza borro la cuenta y sus codigos
+        # entre el SELECT y el flush, un flush de objetos cuya fila
+        # desaparecio lanza StaleDataError (un 500). El UPDATE, en cambio,
+        # simplemente no encuentra filas y no hace nada — el mismo enfoque
+        # que consume(). Es tambien una sola ida a la base de datos.
+        self.session.execute(
+            # UPDATE verification_codes SET invalidated_at = <ahora> WHERE
+            # el codigo es de este usuario y sigue abierto (ni consumido ni
+            # ya invalidado).
+            update(VerificationCode)
+            .where(
+                VerificationCode.user_id == user_id,
+                VerificationCode.consumed_at.is_(None),
+                VerificationCode.invalidated_at.is_(None),
+            )
+            .values(invalidated_at=now),
+            # Actualizacion masiva: los objetos que la sesion ya tuviera
+            # cargados no se sincronizan (nadie los vuelve a leer; el
+            # servicio hace commit, que los expira).
+            execution_options={"synchronize_session": False},
         )
-        for code in self.session.exec(statement).all():
-            code.invalidated_at = now
-            self.session.add(code)
-        self.session.flush()
+
+    def consume(self, code_id: int, now: datetime) -> bool:
+        """Mark a code consumed, only if it is still open. True if it was.
+
+        A conditional UPDATE instead of "load the object, set the attribute,
+        flush": if the row is gone (the stale-account job deleted the user
+        and its codes while bcrypt was still comparing) or was already used
+        by a concurrent request, the UPDATE simply matches nothing and the
+        caller gets False — whereas an ORM flush of a vanished row raises
+        StaleDataError (a 500). It also makes a code single-use under
+        concurrency: only one of two simultaneous correct submissions wins.
+        """
+        # UPDATE verification_codes SET consumed_at = <ahora> WHERE el codigo
+        # sigue abierto: no consumido, no invalidado y no expirado.
+        result = self.session.execute(
+            update(VerificationCode)
+            .where(
+                VerificationCode.id == code_id,
+                VerificationCode.consumed_at.is_(None),
+                VerificationCode.invalidated_at.is_(None),
+                VerificationCode.expires_at > now,
+            )
+            .values(consumed_at=now),
+            # Actualizacion masiva: no hay objetos cargados que sincronizar.
+            execution_options={"synchronize_session": False},
+        )
+        # rowcount == 1 => se consumio; 0 => la fila ya no estaba "abierta".
+        return result.rowcount == 1
