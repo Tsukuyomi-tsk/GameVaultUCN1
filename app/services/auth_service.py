@@ -254,6 +254,11 @@ def resend_verification(session: Session, *, email: str) -> VerificationEmail | 
     """
     pending = _resend_verification(session, email=email)
     if pending is None:
+        # Se libera la transaccion ANTES del bcrypt descartable: la lectura
+        # (o el UPDATE) de arriba puede dejar abierta una transaccion, y en
+        # SQLite eso retiene el candado de escritura todo el tiempo que tarda
+        # el hash, bloqueando a las demas peticiones sin necesidad.
+        session.rollback()
         _spend_code_hash_time()
     return pending
 
