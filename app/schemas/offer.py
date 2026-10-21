@@ -12,6 +12,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.time import UtcNaiveDatetime
+
 
 class OfferCreate(BaseModel):
     # A que juego pertenece la oferta — se manda explicito en el body (no
@@ -23,8 +25,11 @@ class OfferCreate(BaseModel):
     # pero validado aca ANTES de llegar a la base de datos, para devolver
     # un 422 claro en vez de un error de constraint de SQL.
     discount_percent: int = Field(ge=1, le=90)
-    starts_at: datetime
-    ends_at: datetime
+    # UtcNaiveDatetime: si el cliente manda zona ("Z", "-03:00") se convierte
+    # a UTC sin zona (convencion del proyecto, ver app/core/time.py); asi lo
+    # que se guarda y compara es siempre el mismo instante.
+    starts_at: UtcNaiveDatetime
+    ends_at: UtcNaiveDatetime
     # is_active tiene un valor por defecto (True): si el admin no lo manda
     # explicitamente, la oferta se crea activa.
     is_active: bool = True
@@ -62,8 +67,8 @@ class OfferUpdate(BaseModel):
     # despues de combinar estos valores con los que ya tenia la oferta
     # guardada en la base de datos.
     discount_percent: int | None = Field(default=None, ge=1, le=90)
-    starts_at: datetime | None = None
-    ends_at: datetime | None = None
+    starts_at: UtcNaiveDatetime | None = None
+    ends_at: UtcNaiveDatetime | None = None
     is_active: bool | None = None
 
 
