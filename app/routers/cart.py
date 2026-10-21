@@ -26,6 +26,19 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # FastAPI lo derive del nombre del parametro (que seria "X_Cart_Token").
 CartTokenHeader = Annotated[str | None, Header(alias="X-Cart-Token")]
 
+# Autenticacion OPCIONAL en OpenAPI. FastAPI ya publica `security:
+# [{"HTTPBearer": []}]` (el JWT) para estas rutas, lo que en /docs se lee como
+# "obligatorio". openapi_extra se FUSIONA con lo generado y las listas se
+# concatenan: agregar `{}` (una alternativa sin credenciales) deja
+# `[{"HTTPBearer": []}, {}]`, que es la forma estandar de OpenAPI para "con
+# JWT o sin nada". Solo cambia la documentacion: en tiempo de ejecucion un
+# JWT presente pero invalido sigue rechazandose con 401 (ver
+# get_optional_current_user).
+OPTIONAL_AUTH = {"security": [{}]}
+_INVALID_TOKEN_RESPONSE = {
+    401: {"description": "Se envio un JWT, pero es invalido, expiro o la sesion fue cerrada."}
+}
+
 
 def _to_read(view: CartView) -> CartRead:
     # Funcion privada compartida por todas las rutas de este archivo:
@@ -56,7 +69,9 @@ def _to_read(view: CartView) -> CartRead:
 # identificado por X-Cart-Token). Nunca crea un carrito nuevo por si solo.
 # current_user usa OptionalCurrentUser (no CurrentUser): esta ruta funciona
 # tanto logueado como sin loguearse.
-@router.get("", response_model=CartRead)
+@router.get(
+    "", response_model=CartRead, openapi_extra=OPTIONAL_AUTH, responses=_INVALID_TOKEN_RESPONSE
+)
 def get_cart(
     session: SessionDep, current_user: OptionalCurrentUser, x_cart_token: CartTokenHeader = None
 ) -> CartRead:
@@ -67,7 +82,13 @@ def get_cart(
 # POST /cart/items — agrega un juego. Si es un invitado sin X-Cart-Token
 # todavia, crea un carrito nuevo y devuelve su token en la respuesta
 # (campo cart_token de CartRead) para que el cliente lo guarde.
-@router.post("/items", response_model=CartRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/items",
+    response_model=CartRead,
+    status_code=status.HTTP_201_CREATED,
+    openapi_extra=OPTIONAL_AUTH,
+    responses=_INVALID_TOKEN_RESPONSE,
+)
 def add_item(
     payload: AddCartItemRequest,
     session: SessionDep,
@@ -81,7 +102,12 @@ def add_item(
 
 
 # DELETE /cart/items/{game_id} — quita un juego puntual del carrito.
-@router.delete("/items/{game_id}", response_model=CartRead)
+@router.delete(
+    "/items/{game_id}",
+    response_model=CartRead,
+    openapi_extra=OPTIONAL_AUTH,
+    responses=_INVALID_TOKEN_RESPONSE,
+)
 def remove_item(
     game_id: int,
     session: SessionDep,
@@ -96,7 +122,12 @@ def remove_item(
 
 # DELETE /cart — vacia el carrito completo. 204 sin body, como cualquier
 # otro DELETE del proyecto (ver, por ejemplo, admin_offers.py).
-@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "",
+    status_code=status.HTTP_204_NO_CONTENT,
+    openapi_extra=OPTIONAL_AUTH,
+    responses=_INVALID_TOKEN_RESPONSE,
+)
 def clear_cart(
     session: SessionDep, current_user: OptionalCurrentUser, x_cart_token: CartTokenHeader = None
 ) -> None:
