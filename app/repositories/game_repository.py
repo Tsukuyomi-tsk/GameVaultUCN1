@@ -174,9 +174,12 @@ class GameRepository(BaseRepository[Game]):
         )
 
         if q:
-            like_pattern = f"%{q}%"
+            # icontains(autoescape=True) arma el LIKE '%q%' ESCAPANDO los
+            # comodines de q: sin eso, un "%" o "_" escrito por el usuario se
+            # interpretaria como comodin y "q=%" listaria todo el catalogo.
             statement = statement.where(
-                Game.title.ilike(like_pattern) | Game.description.ilike(like_pattern)
+                Game.title.icontains(q, autoescape=True)
+                | Game.description.icontains(q, autoescape=True)
             )
         if platform:
             statement = statement.where(func.lower(Game.platform) == platform.lower())
@@ -298,8 +301,8 @@ class GameRepository(BaseRepository[Game]):
         # Busqueda de texto opcional, solo sobre el titulo (mas simple que
         # la busqueda publica de Fase 3, que tambien mira la descripcion).
         if q:
-            like_pattern = f"%{q}%"
-            statement = statement.where(Game.title.ilike(like_pattern))
+            # autoescape=True: "%" y "_" del usuario se buscan como texto literal.
+            statement = statement.where(Game.title.icontains(q, autoescape=True))
 
         # Cuenta cuantos juegos en total cumplen el filtro de busqueda
         # (antes de aplicar offset/limit), para el "total" de la respuesta

@@ -94,7 +94,9 @@ def _cors_headers_for(request: Request) -> dict[str, str]:
 
 
 async def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
-    return _error_response(exc.status_code, exc.code, exc.message, request, exc.details)
+    return _error_response(
+        exc.status_code, exc.code, exc.message, request, exc.details, extra_headers=exc.headers
+    )
 
 
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

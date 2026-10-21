@@ -18,7 +18,12 @@ class UserRepository(BaseRepository[User]):
     model = User
 
     def get_by_email(self, email: str) -> User | None:
-        return self.session.exec(select(User).where(User.email == email)).first()
+        # Comparacion exacta contra la forma canonica (minusculas segun
+        # Python, igual que los schemas y el seeder). No se usa lower() de
+        # SQLite: solo convierte ASCII y trataria distinto "JOSÉ@x.com".
+        # Los correos ya guardados se llevaron a esa forma con la migracion
+        # "correos en minusculas", que ademas aborta si hay colisiones.
+        return self.session.exec(select(User).where(User.email == email.lower())).first()
 
     # Los tres metodos siguientes tocan los campos de verificacion con un
     # UPDATE atomico (la base hace la aritmetica y la comprobacion), nunca

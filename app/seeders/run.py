@@ -39,6 +39,7 @@ from app.models import (
     UserRole,
     WishlistItem,
 )
+from app.seeders.credentials import assert_no_public_credentials
 from app.seeders.data import (
     CATEGORIES,
     GAMES,
@@ -132,6 +133,10 @@ def _get_or_create_user(
     password: str,
     role: UserRole,
 ) -> tuple[User, bool]:
+    # Misma forma canonica que usan los schemas y UserRepository.get_by_email:
+    # con ADMIN_EMAIL="Admin@x.com" el seeder crearia un segundo admin
+    # equivalente al ya existente "admin@x.com".
+    email = email.lower()
     user = session.exec(select(User).where(User.email == email)).first()
     if user is not None:
         return user, False
@@ -282,7 +287,27 @@ def _seed_reviews(
 
 
 def run_seeders() -> None:
-    """Populate the database with demo data. Safe to call on every startup."""
+    """Populate the database with demo data. Safe to call on every startup.
+
+    In production only the admin account is created: the demo users share a
+    public password (SEED_USER_PASSWORD) and the demo catalog is not real data.
+    """
+    if settings.environment == "production":
+        with Session(engine) as session:
+            _get_or_create_user(
+                session,
+                email=settings.admin_email,
+                full_name=settings.admin_full_name,
+                password=settings.admin_password,
+                role=UserRole.ADMIN,
+            )
+            session.commit()
+            # Si la base ya existia (heredada de desarrollo) el admin conserva su
+            # contrasena vieja: se avisa en vez de dejarlo pasar en silencio.
+            assert_no_public_credentials(session)
+        logger.info("Seeder (produccion): solo la cuenta de administrador.")
+        return
+
     with Session(engine) as session:
         categories_by_slug = _seed_categories(session)
         games_by_slug = _seed_games(session, categories_by_slug)
