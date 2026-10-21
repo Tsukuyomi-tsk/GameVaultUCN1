@@ -43,6 +43,15 @@ from app.routers.wishlist import router as wishlist_router
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    if settings.environment == "production":
+        # Una base heredada del seeder de desarrollo conserva contrasenas
+        # publicas (admin y usuarios demo): en produccion la app no arranca
+        # mientras alguna cuenta activa las acepte. Importado aqui por la
+        # misma razon que el seeder de abajo.
+        from app.seeders.credentials import check_production_credentials
+
+        check_production_credentials()
+
     if settings.seed_on_startup:
         # Imported here, not at module load, so `alembic env.py` (which
         # also imports app.core.config) never pulls in the seeder's models
@@ -87,8 +96,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     # Un navegador solo deja leer a JavaScript las cabeceras de respuesta
-    # "seguras"; X-Request-ID hay que exponerla explicitamente.
-    expose_headers=[REQUEST_ID_HEADER],
+    # "seguras"; X-Request-ID y Retry-After (la usa el 429 de /auth/verify
+    # para decir cuanto esperar) hay que exponerlas explicitamente.
+    expose_headers=[REQUEST_ID_HEADER, "Retry-After"],
 )
 # Se agrega ULTIMO a proposito: en Starlette el ultimo middleware agregado
 # es el mas externo, asi que el request_id existe antes que cualquier otro

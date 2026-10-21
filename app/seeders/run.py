@@ -39,6 +39,7 @@ from app.models import (
     UserRole,
     WishlistItem,
 )
+from app.seeders.credentials import assert_no_public_credentials
 from app.seeders.data import (
     CATEGORIES,
     GAMES,
@@ -132,6 +133,10 @@ def _get_or_create_user(
     password: str,
     role: UserRole,
 ) -> tuple[User, bool]:
+    # Misma forma canonica que usan los schemas y UserRepository.get_by_email:
+    # con ADMIN_EMAIL="Admin@x.com" el seeder crearia un segundo admin
+    # equivalente al ya existente "admin@x.com".
+    email = email.lower()
     user = session.exec(select(User).where(User.email == email)).first()
     if user is not None:
         return user, False
@@ -297,6 +302,9 @@ def run_seeders() -> None:
                 role=UserRole.ADMIN,
             )
             session.commit()
+            # Si la base ya existia (heredada de desarrollo) el admin conserva su
+            # contrasena vieja: se avisa en vez de dejarlo pasar en silencio.
+            assert_no_public_credentials(session)
         logger.info("Seeder (produccion): solo la cuenta de administrador.")
         return
 

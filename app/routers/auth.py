@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, status
 from sqlmodel import Session
 
 from app.core.config import settings
@@ -36,10 +36,19 @@ SessionDep = Annotated[Session, Depends(get_session)]
 
 @router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(settings.rate_limit_auth)
-def register(request: Request, payload: RegisterRequest, session: SessionDep) -> RegisterResponse:
-    auth_service.register(
+def register(
+    request: Request,
+    payload: RegisterRequest,
+    session: SessionDep,
+    background_tasks: BackgroundTasks,
+) -> RegisterResponse:
+    pending_email = auth_service.register(
         session, email=payload.email, password=payload.password, full_name=payload.full_name
     )
+    # El correo sale DESPUES de responder (BackgroundTasks): la respuesta no
+    # espera al proveedor, asi que tarda lo mismo con un correo nuevo o repetido.
+    if pending_email is not None:
+        background_tasks.add_task(auth_service.deliver_verification_email, pending_email)
     # Mensaje fijo: es el mismo exista o no ya una cuenta con ese correo.
     return RegisterResponse(
         message="Si el correo puede registrarse, te enviamos un codigo para verificar la cuenta."
@@ -56,9 +65,14 @@ def verify(request: Request, payload: VerifyRequest, session: SessionDep) -> Mes
 @router.post("/resend-verification", response_model=MessageResponse)
 @limiter.limit(settings.rate_limit_auth)
 def resend_verification(
-    request: Request, payload: ResendVerificationRequest, session: SessionDep
+    request: Request,
+    payload: ResendVerificationRequest,
+    session: SessionDep,
+    background_tasks: BackgroundTasks,
 ) -> MessageResponse:
-    auth_service.resend_verification(session, email=payload.email)
+    pending_email = auth_service.resend_verification(session, email=payload.email)
+    if pending_email is not None:
+        background_tasks.add_task(auth_service.deliver_verification_email, pending_email)
     return MessageResponse(
         message=(
             "Si la cuenta existe y esta pendiente de verificacion, se envio un nuevo codigo. "
