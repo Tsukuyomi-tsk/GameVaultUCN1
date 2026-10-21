@@ -13,6 +13,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.time import UtcNaiveDatetime
+from app.schemas.base import PatchSchema
 
 
 class OfferCreate(BaseModel):
@@ -53,12 +54,15 @@ class OfferCreate(BaseModel):
         return self
 
 
-class OfferUpdate(BaseModel):
+class OfferUpdate(PatchSchema):
     """Every field optional. If either `starts_at`/`ends_at` is provided,
     the service resolves the full window (patched values merged onto the
     existing offer) before re-validating order and overlap — a partial
     body alone can't tell if the resulting window still makes sense.
     """
+
+    # Las 4 columnas son NOT NULL: un null explicito se rechaza con 422.
+    non_nullable = frozenset({"discount_percent", "starts_at", "ends_at", "is_active"})
 
     # Todo opcional para un PATCH parcial. Notese que ACA no hay un
     # @model_validator como en OfferCreate: si el admin solo manda

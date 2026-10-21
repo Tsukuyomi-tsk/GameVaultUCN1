@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.base import PatchSchema
 from app.schemas.category import CategoryRead
 from app.schemas.game import GameImageRead
 
@@ -52,11 +53,16 @@ class GameCreate(BaseModel):
     category_ids: list[int] = Field(default_factory=list)
 
 
-class GameUpdate(BaseModel):
+class GameUpdate(PatchSchema):
     """Every field optional — the service applies only the keys actually
     present in the request body (`model_dump(exclude_unset=True)`), so a
     field left out is left untouched, never reset to null.
     """
+
+    # Campos que NO se pueden mandar como null (columna NOT NULL): PatchSchema
+    # los rechaza con 422. description, developer, publisher y release_date
+    # SI se pueden vaciar con null; category_ids=null equivale a omitirlo.
+    non_nullable = frozenset({"title", "slug", "platform", "base_price", "is_active"})
 
     # Todos los campos son "X | None = None" — un PATCH parcial: el admin
     # solo manda los campos que quiere cambiar, y el resto se omite del

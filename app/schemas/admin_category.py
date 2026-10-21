@@ -6,6 +6,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.base import PatchSchema
+
 _SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 
 
@@ -18,7 +20,10 @@ class CategoryCreate(BaseModel):
     description: str | None = Field(default=None, max_length=500)
 
 
-class CategoryUpdate(BaseModel):
+class CategoryUpdate(PatchSchema):
+    # name y slug son NOT NULL: un null explicito se rechaza con 422.
+    non_nullable = frozenset({"name", "slug"})
+
     # Igual que GameUpdate: todo opcional, para un PATCH parcial. Si un
     # campo no viene en el JSON, el servicio no lo toca.
     name: str | None = Field(default=None, min_length=1, max_length=100)
