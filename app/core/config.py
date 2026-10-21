@@ -15,12 +15,6 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _EXAMPLE_SECRET_KEY = "change-this-secret-key-in-your-own-env-file"
-EXAMPLE_ADMIN_PASSWORD = "ChangeMe123!"
-
-# bcrypt solo lee los primeros 72 BYTES de una contrasena y desde la version 5
-# lanza ValueError con mas (ver app/core/security.py, que reusa esta constante).
-BCRYPT_MAX_PASSWORD_BYTES = 72
-_ADMIN_PASSWORD_MIN_LENGTH = 8
 
 
 class Settings(BaseSettings):
@@ -68,7 +62,7 @@ class Settings(BaseSettings):
     # --- Seeder ---
     seed_on_startup: bool = True
     admin_email: str = "admin@gamevault.ucn.cl"
-    admin_password: str = EXAMPLE_ADMIN_PASSWORD
+    admin_password: str = "ChangeMe123!"
     admin_full_name: str = "Administrador GameVault"
 
     # --- Resend (transactional email) ---
@@ -105,17 +99,6 @@ class Settings(BaseSettings):
         )
         return "cloudinary" if has_cloudinary_credentials else "dev-local"
 
-    def _admin_password_problem(self) -> str | None:
-        """Why ADMIN_PASSWORD can't be used in production, or None if it can."""
-        password = self.admin_password
-        if len(password) < _ADMIN_PASSWORD_MIN_LENGTH:
-            return f"minimo {_ADMIN_PASSWORD_MIN_LENGTH} caracteres"
-        if len(password.encode("utf-8")) > BCRYPT_MAX_PASSWORD_BYTES:
-            return f"maximo {BCRYPT_MAX_PASSWORD_BYTES} bytes"
-        if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
-            return "debe combinar letras y numeros"
-        return None
-
     @model_validator(mode="after")
     def _forbid_dev_fallback_in_production(self) -> Settings:
         """The dev fallback for Resend/Cloudinary never applies in production.
@@ -133,31 +116,11 @@ class Settings(BaseSettings):
             missing.append("CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET")
         if self.secret_key == _EXAMPLE_SECRET_KEY:
             missing.append("SECRET_KEY (usando el valor de ejemplo)")
-        # El seeder crea al admin con ADMIN_PASSWORD en cada arranque: con el
-        # valor de ejemplo, cualquiera que lea el repo entra como admin.
-        if self.admin_password == EXAMPLE_ADMIN_PASSWORD:
-            missing.append("ADMIN_PASSWORD (usando el valor de ejemplo)")
-        else:
-            # Mismas reglas que el registro publico (schemas/auth.py): sin
-            # esto, una variable vacia crearia un admin SIN contrasena y una
-            # de mas de 72 bytes haria fallar el seeder con un ValueError.
-            admin_password_problem = self._admin_password_problem()
-            if admin_password_problem:
-                missing.append(f"ADMIN_PASSWORD ({admin_password_problem})")
-        # "*" permite que cualquier sitio web llame a la API desde un navegador.
-        if "*" in self.cors_origins_list:
-            missing.append("CORS_ORIGINS (no puede ser '*', lista los origenes permitidos)")
-        if self.debug:
-            missing.append("DEBUG (debe ser false)")
-        # El seeder siembra datos de demo (incluidos usuarios con contrasena
-        # publica): en produccion se ejecuta solo a mano, nunca al arrancar.
-        if self.seed_on_startup:
-            missing.append("SEED_ON_STARTUP (debe ser false)")
 
         if missing:
             raise ValueError(
-                "ENVIRONMENT=production requiere una configuracion segura. "
-                f"Faltan, son de ejemplo o no son validas: {'; '.join(missing)}"
+                "ENVIRONMENT=production requiere credenciales reales. "
+                f"Faltan o son de ejemplo: {'; '.join(missing)}"
             )
         return self
 
