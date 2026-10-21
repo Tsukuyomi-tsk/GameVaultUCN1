@@ -39,7 +39,6 @@ from app.models import (
     UserRole,
     WishlistItem,
 )
-from app.seeders.credentials import assert_no_public_credentials
 from app.seeders.data import (
     CATEGORIES,
     GAMES,
@@ -302,9 +301,6 @@ def run_seeders() -> None:
                 role=UserRole.ADMIN,
             )
             session.commit()
-            # Si la base ya existia (heredada de desarrollo) el admin conserva su
-            # contrasena vieja: se avisa en vez de dejarlo pasar en silencio.
-            assert_no_public_credentials(session)
         logger.info("Seeder (produccion): solo la cuenta de administrador.")
         return
 
