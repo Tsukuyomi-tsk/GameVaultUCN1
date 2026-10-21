@@ -35,7 +35,16 @@ def to_utc_naive(value: datetime) -> datetime:
         return value
     # astimezone(UTC) mueve la hora al equivalente en UTC; replace(tzinfo=None)
     # la deja "naive" para poder compararla con las columnas de SQLite.
-    return value.astimezone(UTC).replace(tzinfo=None)
+    try:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    except OverflowError:
+        # Una fecha pegada al limite del calendario ("0001-01-01T00:00:00+01:00")
+        # es valida con su zona, pero su equivalente en UTC cae antes del año 1
+        # (o despues del 9999) y Python lanza OverflowError. Se convierte en
+        # ValueError para que Pydantic responda 422 en vez de un 500.
+        raise ValueError(
+            "La fecha no es representable en UTC (fuera del rango 0001-9999)."
+        ) from None
 
 
 # Tipo reutilizable para cualquier fecha que llegue de un cliente (body o
