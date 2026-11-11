@@ -30,6 +30,9 @@ Thumbs.db
 # Contexto local para agentes (no se entrega como parte del trabajo)
 CLAUDE.md
 
+# Material de clase del profesor (no es parte del entregable del taller)
+docs/clases/
+
 # Ruff / mypy cache
 .ruff_cache/
 .mypy_cache/
