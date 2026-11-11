@@ -96,7 +96,34 @@ def get_order(order_code: str, session: SessionDep, current_user: CurrentUser) -
 # GET /orders/{order_code}/receipt — descarga la boleta en PDF. Puede
 # responder 404 "todavia no esta disponible" si el BackgroundTask del
 # checkout aun no termino de generarla (ver order_service.get_receipt_path).
-@router.get("/{order_code}/receipt")
+@router.get(
+    "/{order_code}/receipt",
+    # response_class=FileResponse: sin esto FastAPI documenta el 200 como
+    # JSON (el tipo por defecto). FileResponse no fija un media_type, asi
+    # que el 200 se describe solo con el bloque `responses` de abajo.
+    response_class=FileResponse,
+    responses={
+        200: {
+            "description": "Boleta en PDF (archivo adjunto).",
+            # El contenido NO es JSON: es un archivo binario.
+            "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
+            "headers": {
+                "Content-Disposition": {
+                    "description": 'Nombre del archivo, formato: attachment; filename="GV-YYYYMMDD-XXXXXXXX.pdf" (el codigo de la orden).',
+                    "schema": {"type": "string"},
+                }
+            },
+        },
+        401: {"description": "Falta el token, es invalido o la sesion fue cerrada."},
+        403: {"description": "La cuenta esta suspendida."},
+        404: {
+            "description": (
+                "La orden no existe, es de otro usuario, o la boleta todavia se esta "
+                "generando en segundo plano."
+            )
+        },
+    },
+)
 def get_receipt(order_code: str, session: SessionDep, current_user: CurrentUser) -> FileResponse:
     # get_receipt_path ya valida dueño/admin y que el archivo exista antes
     # de devolver la ruta — aca solo queda envolverla en una FileResponse.

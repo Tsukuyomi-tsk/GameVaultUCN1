@@ -43,15 +43,6 @@ from app.routers.wishlist import router as wishlist_router
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    if settings.environment == "production":
-        # Una base heredada del seeder de desarrollo conserva contrasenas
-        # publicas (admin y usuarios demo): en produccion la app no arranca
-        # mientras alguna cuenta activa las acepte. Importado aqui por la
-        # misma razon que el seeder de abajo.
-        from app.seeders.credentials import check_production_credentials
-
-        check_production_credentials()
-
     if settings.seed_on_startup:
         # Imported here, not at module load, so `alembic env.py` (which
         # also imports app.core.config) never pulls in the seeder's models

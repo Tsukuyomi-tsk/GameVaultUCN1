@@ -18,15 +18,15 @@ from typing import Any
 import bcrypt
 import jwt
 
-from app.core.config import BCRYPT_MAX_PASSWORD_BYTES, settings
+from app.core.config import settings
 from app.core.time import utcnow
 
 _ENCODING = "utf-8"
 
-# BCRYPT_MAX_PASSWORD_BYTES (72) vive en app.core.config para que el validador
-# de ADMIN_PASSWORD lo use sin un import circular. bcrypt solo lee los primeros
-# 72 BYTES de una contrasena y, desde la 5.0, lanza ValueError con mas en vez de
-# truncar. Bytes, no caracteres: "n" ocupa 1 byte en UTF-8, "ñ" 2 y un emoji 4.
+# bcrypt only reads the first 72 BYTES of a password and, since 5.0, raises
+# ValueError on anything longer instead of silently truncating. Bytes, not
+# characters: "n" is 1 byte in UTF-8 but "ñ" is 2 and an emoji is 4.
+BCRYPT_MAX_PASSWORD_BYTES = 72
 
 
 def hash_password(plain_password: str) -> str:

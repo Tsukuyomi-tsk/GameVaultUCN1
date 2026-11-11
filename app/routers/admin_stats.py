@@ -7,7 +7,6 @@ aliased back to `from`/`to` for the actual query string.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -15,6 +14,7 @@ from sqlmodel import Session
 
 from app.core.database import get_session
 from app.core.dependencies import AdminUser
+from app.core.time import UtcNaiveDatetime
 from app.schemas.stats import PopularityEntry, PopularityStats
 from app.services import admin_stats_service
 
@@ -31,8 +31,10 @@ def get_popularity(
     # Query(alias="from"): el parametro de Python se llama date_from (no
     # se puede llamar "from", es palabra reservada), pero en la URL real
     # el query param sigue siendo "?from=...", tal como lo pide el plan.
-    date_from: Annotated[datetime | None, Query(alias="from")] = None,
-    date_to: Annotated[datetime | None, Query(alias="to")] = None,
+    # UtcNaiveDatetime: un "from"/"to" con zona se convierte a UTC antes de
+    # filtrar (las columnas guardan UTC sin zona).
+    date_from: Annotated[UtcNaiveDatetime | None, Query(alias="from")] = None,
+    date_to: Annotated[UtcNaiveDatetime | None, Query(alias="to")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 10,
 ) -> PopularityStats:
     top_wishlisted, top_purchased = admin_stats_service.get_popularity(
