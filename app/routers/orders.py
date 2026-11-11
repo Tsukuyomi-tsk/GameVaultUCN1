@@ -109,7 +109,7 @@ def get_order(order_code: str, session: SessionDep, current_user: CurrentUser) -
             "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
             "headers": {
                 "Content-Disposition": {
-                    "description": 'Nombre del archivo, ej: attachment; filename="GV-20261021-376B3EBD.pdf".',
+                    "description": 'Nombre del archivo, formato: attachment; filename="GV-YYYYMMDD-XXXXXXXX.pdf" (el codigo de la orden).',
                     "schema": {"type": "string"},
                 }
             },
