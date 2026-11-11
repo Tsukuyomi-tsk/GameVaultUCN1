@@ -1,7 +1,7 @@
 # GameVault UCN
 
 Backend REST de **GameVault UCN**, una plataforma de distribución digital de videojuegos.
-Es la entrega del **Taller 1 — API REST** del curso *Introducción al Desarrollo Web y Móvil* (UCN).
+Es la **API REST** del curso *Introducción al Desarrollo Web y Móvil* (UCN).
 
 > **Es un proyecto académico, pensado para aprender y probar en local.** No está endurecido para
 > producción (ver [Límites conocidos](#límites-conocidos)).
