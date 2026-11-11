@@ -11,10 +11,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AddCartItemRequest(BaseModel):
+    # Ejemplo precargado en Swagger.
+    model_config = ConfigDict(json_schema_extra={"examples": [{"game_id": 1}]})
+
     # El unico dato que manda el cliente al agregar un item: que juego
     # quiere agregar. Todo lo demas (precio, descuento) lo calcula el
     # servidor.

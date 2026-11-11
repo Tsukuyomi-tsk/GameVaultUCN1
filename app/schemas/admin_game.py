@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.base import PatchSchema
 from app.schemas.category import CategoryRead
@@ -28,6 +28,25 @@ _SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 # valida automaticamente el body de la request contra esta clase antes de
 # que el codigo del router se ejecute siquiera.
 class GameCreate(BaseModel):
+    # Ejemplo que Swagger precarga en 'Try it out'. category_ids 1 y 2 existen tras sembrar la demo.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "title": "Mi Juego de Prueba",
+                    "slug": "mi-juego-de-prueba",
+                    "description": "Un juego creado desde Swagger.",
+                    "developer": "Estudio UCN",
+                    "publisher": "UCN Games",
+                    "platform": "PC",
+                    "release_date": "2026-01-15",
+                    "base_price": 19990,
+                    "category_ids": [1, 2],
+                }
+            ]
+        }
+    )
+
     # Field(...) permite agregar validaciones extra ademas del tipo:
     # min_length/max_length limitan el largo del string.
     title: str = Field(min_length=1, max_length=255)
@@ -58,6 +77,11 @@ class GameUpdate(PatchSchema):
     present in the request body (`model_dump(exclude_unset=True)`), so a
     field left out is left untouched, never reset to null.
     """
+
+    # Ejemplo: un PATCH manda solo lo que cambia.
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"base_price": 24990, "is_active": True}]}
+    )
 
     # Campos que NO se pueden mandar como null (columna NOT NULL): PatchSchema
     # los rechaza con 422. description, developer, publisher y release_date

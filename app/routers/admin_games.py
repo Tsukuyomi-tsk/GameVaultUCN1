@@ -22,6 +22,7 @@ from app.schemas.admin_game import (
     GameUpdate,
 )
 from app.schemas.category import CategoryRead
+from app.schemas.errors import ADMIN_RESPONSES, errors
 from app.schemas.game import GameImageRead
 from app.services import admin_game_service
 
@@ -29,7 +30,7 @@ from app.services import admin_game_service
 # prefijo automaticamente (no hace falta repetirlo en cada @router.get/post).
 # tags=["admin-games"] es solo para agrupar visualmente estos endpoints en
 # la documentacion automatica de /docs.
-router = APIRouter(prefix="/admin/games", tags=["admin-games"])
+router = APIRouter(prefix="/admin/games", tags=["admin-games"], responses=ADMIN_RESPONSES)
 
 # Alias reutilizable: en vez de escribir "Annotated[Session, Depends(get_session)]"
 # en cada funcion, se usa este nombre corto. Depends(get_session) le dice a
@@ -68,7 +69,16 @@ def _to_detail(row) -> GameAdminDetail:
 
 
 # GET /admin/games — listado paginado.
-@router.get("", response_model=GameAdminPage)
+@router.get(
+    "",
+    response_model=GameAdminPage,
+    summary="Listar juegos (admin)",
+    description=(
+        "Listado paginado con **todos** los juegos, incluidos inactivos y eliminados "
+        "(`deleted_at` distinto de null). `q` busca en titulo y descripcion."
+    ),
+    responses=errors(422),
+)
 def list_games(
     session: SessionDep,
     # AdminUser es una dependencia de FastAPI que exige un JWT valido de
@@ -114,7 +124,13 @@ def list_games(
 
 
 # GET /admin/games/{game_id} — detalle de un juego puntual.
-@router.get("/{game_id}", response_model=GameAdminDetail)
+@router.get(
+    "/{game_id}",
+    response_model=GameAdminDetail,
+    summary="Ver un juego (admin)",
+    description="Todos los campos de un juego, con sus categorias e imagenes.",
+    responses=errors((404, "El juego no existe."), 422),
+)
 def get_game(game_id: int, session: SessionDep, _admin: AdminUser) -> GameAdminDetail:
     # game_id se toma automaticamente del segmento {game_id} de la URL —
     # FastAPI lo convierte a int y, si no es un numero valido, devuelve un
@@ -125,7 +141,17 @@ def get_game(game_id: int, session: SessionDep, _admin: AdminUser) -> GameAdminD
 
 # POST /admin/games — crear un juego nuevo. status_code=201 (Created) es
 # el codigo HTTP convencional para "se creo un recurso nuevo con exito".
-@router.post("", response_model=GameAdminDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=GameAdminDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Crear un juego",
+    description=(
+        "Crea un juego. El `slug` (minusculas, numeros y guiones) debe ser unico y las "
+        "`category_ids` deben existir (ve los ids en `GET /admin/categories`)."
+    ),
+    responses=errors((422, "Datos invalidos, `slug` repetido o `category_ids` inexistentes.")),
+)
 def create_game(payload: GameCreate, session: SessionDep, _admin: AdminUser) -> GameAdminDetail:
     # payload: FastAPI ya parseo y valido el JSON del body contra el
     # schema GameCreate antes de que esta funcion se ejecute — si el body
@@ -136,7 +162,21 @@ def create_game(payload: GameCreate, session: SessionDep, _admin: AdminUser) -> 
 
 
 # PATCH /admin/games/{game_id} — actualizacion parcial.
-@router.patch("/{game_id}", response_model=GameAdminDetail)
+@router.patch(
+    "/{game_id}",
+    response_model=GameAdminDetail,
+    summary="Editar un juego",
+    description=(
+        "Actualizacion parcial: manda solo los campos a cambiar. `title`, `slug`, `platform`, "
+        "`base_price` e `is_active` no aceptan `null`; `description`, `developer`, `publisher` "
+        "y `release_date` si (los vacian). `category_ids: []` quita todas las categorias; "
+        "omitir `category_ids` no las toca."
+    ),
+    responses=errors(
+        (404, "El juego no existe."),
+        (422, "Datos invalidos, `null` en un campo obligatorio o `slug` repetido."),
+    ),
+)
 def update_game(
     game_id: int, payload: GameUpdate, session: SessionDep, _admin: AdminUser
 ) -> GameAdminDetail:
@@ -147,13 +187,28 @@ def update_game(
 # DELETE /admin/games/{game_id} — soft delete. 204 No Content: la
 # operacion fue exitosa pero no hay nada que devolver en el body (por eso
 # la funcion devuelve None y no un schema).
-@router.delete("/{game_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{game_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Eliminar un juego (borrado logico)",
+    description=(
+        "Marca el juego como eliminado: desaparece del catalogo pero se conserva en el "
+        "historial de pedidos. Se puede deshacer con `/restore`."
+    ),
+    responses=errors((404, "El juego no existe."), 422),
+)
 def delete_game(game_id: int, session: SessionDep, _admin: AdminUser) -> None:
     admin_game_service.soft_delete_game(session, game_id=game_id)
 
 
 # POST /admin/games/{game_id}/restore — deshace el soft delete.
-@router.post("/{game_id}/restore", response_model=GameAdminDetail)
+@router.post(
+    "/{game_id}/restore",
+    response_model=GameAdminDetail,
+    summary="Restaurar un juego eliminado",
+    description="Deshace el borrado logico del juego.",
+    responses=errors((404, "El juego no existe."), 422),
+)
 def restore_game(game_id: int, session: SessionDep, _admin: AdminUser) -> GameAdminDetail:
     row = admin_game_service.restore_game(session, game_id=game_id)
     return _to_detail(row)
@@ -163,7 +218,20 @@ def restore_game(game_id: int, session: SessionDep, _admin: AdminUser) -> GameAd
 # "async def" (en vez de "def"): esta funcion usa "await" adentro (para
 # leer el archivo subido), asi que tiene que declararse como corutina
 # asincrona — FastAPI soporta ambos estilos (sync y async) en sus rutas.
-@router.post("/{game_id}/images", response_model=GameImageRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{game_id}/images",
+    response_model=GameImageRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Subir una imagen del juego",
+    description=(
+        "Sube un archivo de imagen (formulario `multipart/form-data`; en Swagger usa el "
+        "boton de elegir archivo). Con `is_cover=true` pasa a ser la portada. **Modo dev:** "
+        "sin credenciales de Cloudinary la imagen se guarda en `./media/`."
+    ),
+    responses=errors(
+        (404, "El juego no existe."), (422, "No se envio un archivo o no es una imagen.")
+    ),
+)
 async def upload_game_image(
     game_id: int,
     session: SessionDep,
@@ -197,6 +265,12 @@ async def upload_game_image(
 
 # DELETE /admin/games/{game_id}/images/{image_id} — borra una imagen
 # puntual (tanto el archivo real como la fila en la base de datos).
-@router.delete("/{game_id}/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{game_id}/images/{image_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Borrar una imagen del juego",
+    description="Borra la imagen (el archivo real y su registro).",
+    responses=errors((404, "El juego o la imagen no existen."), 422),
+)
 def delete_game_image(game_id: int, image_id: int, session: SessionDep, _admin: AdminUser) -> None:
     admin_game_service.delete_game_image(session, game_id=game_id, image_id=image_id)

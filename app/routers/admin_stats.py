@@ -15,16 +15,27 @@ from sqlmodel import Session
 from app.core.database import get_session
 from app.core.dependencies import AdminUser
 from app.core.time import UtcNaiveDatetime
+from app.schemas.errors import ADMIN_RESPONSES, errors
 from app.schemas.stats import PopularityEntry, PopularityStats
 from app.services import admin_stats_service
 
-router = APIRouter(prefix="/admin/stats", tags=["admin-stats"])
+router = APIRouter(prefix="/admin/stats", tags=["admin-stats"], responses=ADMIN_RESPONSES)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # GET /admin/stats/popularity — top de juegos mas deseados y mas comprados.
-@router.get("/popularity", response_model=PopularityStats)
+@router.get(
+    "/popularity",
+    response_model=PopularityStats,
+    summary="Juegos mas deseados y mas comprados",
+    description=(
+        "Dos rankings: top de la **wishlist** y top de **compras** (ordenes pagadas). "
+        "`from` y `to` (opcionales, UTC o con zona) acotan el periodo; `limit` es el tamano "
+        "de cada ranking."
+    ),
+    responses=errors(422),
+)
 def get_popularity(
     session: SessionDep,
     _admin: AdminUser,

@@ -15,6 +15,7 @@ from sqlmodel import Session
 from app.core.database import get_session
 from app.core.dependencies import CurrentUser
 from app.models import Review
+from app.schemas.errors import errors
 from app.schemas.review import ReviewCreate, ReviewPage, ReviewRead, ReviewUpdate
 from app.services import review_service
 
@@ -41,7 +42,25 @@ def _to_read(review: Review, author_name: str) -> ReviewRead:
 # POST /games/{game_id}/reviews — resenar un juego que el usuario posee.
 # Responde 403 si no lo posee y 409 si ya lo resena (ver review_service).
 @router.post(
-    "/games/{game_id}/reviews", response_model=ReviewRead, status_code=status.HTTP_201_CREATED
+    "/games/{game_id}/reviews",
+    response_model=ReviewRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Resenar un juego",
+    description=(
+        "Publica tu resena (puntaje 1 a 5 y comentario opcional). Solo puedes resenar juegos "
+        "que **posees** en tu biblioteca, y una resena por juego. Si borraste tu resena antes, "
+        "esta llamada la reactiva."
+    ),
+    responses=errors(
+        401,
+        (
+            403,
+            "La cuenta esta suspendida, o no posees el juego (cometelo primero con el checkout).",
+        ),
+        (404, "El juego no existe o no esta a la venta."),
+        (409, "Ya resenaste este juego: edita tu resena existente con PATCH."),
+        422,
+    ),
 )
 def create_review(
     game_id: int, payload: ReviewCreate, session: SessionDep, current_user: CurrentUser
@@ -55,7 +74,13 @@ def create_review(
 
 
 # GET /games/{slug}/reviews — publico y paginado, las mas nuevas primero.
-@router.get("/games/{slug}/reviews", response_model=ReviewPage)
+@router.get(
+    "/games/{slug}/reviews",
+    response_model=ReviewPage,
+    summary="Listar las resenas de un juego",
+    description="**Publico.** Resenas paginadas de un juego (por su `slug`), las mas nuevas primero.",
+    responses=errors((404, "No existe un juego con ese slug."), 422),
+)
 def list_reviews(
     slug: str,
     session: SessionDep,
@@ -74,7 +99,22 @@ def list_reviews(
 
 # PATCH /reviews/{review_id} — actualizacion parcial, solo del autor o un
 # admin. La resena de otro usuario responde 404 (no 403).
-@router.patch("/reviews/{review_id}", response_model=ReviewRead)
+@router.patch(
+    "/reviews/{review_id}",
+    response_model=ReviewRead,
+    summary="Editar una resena",
+    description=(
+        "Cambia el puntaje y/o el comentario (manda solo lo que quieras cambiar). "
+        "`comment: null` borra el comentario; `rating` no puede ser `null`. Solo la puede "
+        "editar su autor o un admin; la resena de otro usuario responde `404`."
+    ),
+    responses=errors(
+        401,
+        403,
+        (404, "La resena no existe o es de otro usuario."),
+        (422, "Body invalido, vacio (hay que enviar al menos un campo) o `rating: null`."),
+    ),
+)
 def update_review(
     review_id: int, payload: ReviewUpdate, session: SessionDep, current_user: CurrentUser
 ) -> ReviewRead:
@@ -85,6 +125,15 @@ def update_review(
 
 
 # DELETE /reviews/{review_id} — soft delete, solo del autor o un admin.
-@router.delete("/reviews/{review_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/reviews/{review_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Borrar una resena",
+    description=(
+        "Borrado **logico** (la resena deja de mostrarse). Solo su autor o un admin; "
+        "la de otro usuario responde `404`."
+    ),
+    responses=errors(401, 403, (404, "La resena no existe o es de otro usuario."), 422),
+)
 def delete_review(review_id: int, session: SessionDep, current_user: CurrentUser) -> None:
     review_service.soft_delete_review(session, current_user=current_user, review_id=review_id)

@@ -66,10 +66,72 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             scheduler.shutdown(wait=False)
 
 
+# Texto (Markdown) que Swagger UI muestra en la cabecera de /docs. Es la "guia
+# de uso" para probar la API a mano, asi que reune lo que un alumno necesita
+# saber ANTES de tocar un endpoint.
+_API_DESCRIPTION = """
+API REST de **GameVault UCN**, una plataforma de distribucion digital de videojuegos.
+Todo se puede probar desde esta pagina con el boton **Try it out** de cada endpoint.
+
+### Como autenticarte
+1. Crea una cuenta con `POST /auth/register` y verifica el correo con `POST /auth/verify`
+   (en modo dev el codigo no llega por correo: esta en un archivo dentro de `./outbox/`).
+   O usa un usuario ya sembrado (ver el README).
+2. Haz `POST /auth/login` y copia el `access_token` de la respuesta.
+3. Pulsa **Authorize** (arriba a la derecha) y pega ese token. Swagger agrega
+   `Authorization: Bearer <token>` a todas las peticiones.
+4. Para probar como **invitado** (por ejemplo el carrito), pulsa **Authorize** y luego
+   **Logout** dentro del dialogo: Swagger deja de mandar el token.
+
+### Convenciones de la API
+- **Errores:** todos tienen la misma forma, `{"error": {"code", "message", "details"}, "request_id"}`.
+- **Fechas y horas:** siempre en **UTC**, sin sufijo `Z` en las respuestas. Si envias una fecha
+  con zona (`Z` o `-03:00`) se convierte a UTC.
+- **Paginacion:** `page` (desde 1) y `size` (maximo 100); la respuesta trae `total` y `pages`.
+- **Limite de tasa:** los endpoints `/auth/*` aceptan 5 peticiones por minuto **por IP y por
+  endpoint**; el exceso responde `429` con `Retry-After`. Es distinto del bloqueo por **cuenta**
+  tras 5 codigos de verificacion incorrectos (tambien `429`, con su propio `Retry-After`).
+- **Cabecera `X-Request-ID`:** cada respuesta la trae; sirve para encontrar la peticion en los logs.
+"""
+
+# Una entrada por tag: Swagger UI muestra este texto bajo el nombre de cada
+# grupo de endpoints. El orden de la lista es el orden en la pagina.
+_TAGS_METADATA = [
+    {
+        "name": "auth",
+        "description": "Registro, verificacion del correo, inicio y cierre de sesion.",
+    },
+    {
+        "name": "catalog",
+        "description": "Catalogo **publico**: busqueda, detalle de juegos y categorias.",
+    },
+    {
+        "name": "cart",
+        "description": "Carrito. Funciona como invitado (`X-Cart-Token`) o con sesion.",
+    },
+    {"name": "orders", "description": "Checkout idempotente, historial y boleta en PDF."},
+    {"name": "library", "description": "Los juegos que el usuario ya compro."},
+    {"name": "reviews", "description": "Resenas: solo de juegos que el usuario posee."},
+    {"name": "wishlist", "description": "Lista de deseados del usuario."},
+    {"name": "admin-games", "description": "Backoffice: juegos e imagenes. **Solo admin.**"},
+    {"name": "admin-categories", "description": "Backoffice: categorias. **Solo admin.**"},
+    {"name": "admin-offers", "description": "Backoffice: ofertas con vigencia. **Solo admin.**"},
+    {
+        "name": "admin-users",
+        "description": "Backoffice: listar, suspender y reactivar. **Solo admin.**",
+    },
+    {
+        "name": "admin-stats",
+        "description": "Backoffice: juegos mas deseados y mas comprados. **Solo admin.**",
+    },
+    {"name": "health", "description": "Estado del servidor y modo de las integraciones."},
+]
+
 app = FastAPI(
     title=settings.app_name,
-    description="API REST de GameVault UCN — plataforma de distribucion digital de videojuegos.",
+    description=_API_DESCRIPTION,
     version="0.1.0",
+    openapi_tags=_TAGS_METADATA,
     lifespan=lifespan,
 )
 
@@ -125,7 +187,16 @@ app.include_router(wishlist_router)
 app.mount("/media", StaticFiles(directory="media", check_dir=False), name="media")
 
 
-@app.get("/health", tags=["health"])
+@app.get(
+    "/health",
+    tags=["health"],
+    summary="Estado del servidor",
+    description=(
+        "Responde `ok` si el servidor esta vivo e indica en que modo corre cada integracion: "
+        "`email` es `resend` o `dev-outbox` (los correos se guardan en `./outbox/`) y `media` "
+        "es `cloudinary` o `dev-local` (las imagenes se guardan en `./media/`)."
+    ),
+)
 def health_check() -> dict[str, object]:
     """Liveness check, plus which mode each third-party integration is
     actually running in — see the plan's "Contrato del fallback": this is

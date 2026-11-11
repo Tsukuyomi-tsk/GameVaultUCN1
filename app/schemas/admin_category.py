@@ -12,6 +12,15 @@ _SLUG_PATTERN = r"^[a-z0-9]+(-[a-z0-9]+)*$"
 
 
 class CategoryCreate(BaseModel):
+    # Ejemplo precargado en Swagger (esa categoria no esta en la demo sembrada).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {"name": "Indie", "slug": "indie", "description": "Juegos independientes."}
+            ]
+        }
+    )
+
     # Forma del JSON esperado en POST /admin/categories — los 3 campos que
     # tiene el modelo Category, sin id (lo genera la base de datos) y sin
     # deleted_at (una categoria recien creada nunca nace eliminada).
@@ -21,6 +30,11 @@ class CategoryCreate(BaseModel):
 
 
 class CategoryUpdate(PatchSchema):
+    # Ejemplo: un PATCH manda solo lo que cambia.
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"description": "Descripcion actualizada."}]}
+    )
+
     # name y slug son NOT NULL: un null explicito se rechaza con 422.
     non_nullable = frozenset({"name", "slug"})
 

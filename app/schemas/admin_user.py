@@ -46,6 +46,13 @@ class UserPage(BaseModel):
 
 
 class SuspendUserRequest(BaseModel):
+    # Ejemplo precargado en Swagger.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"reason": "Incumplimiento de las normas de la comunidad."}]
+        }
+    )
+
     # Cuerpo que el admin manda al suspender una cuenta: un motivo
     # obligatorio (min_length=1 impide mandar un string vacio) que se
     # guarda en User.suspension_reason, para que quede registro de POR QUE

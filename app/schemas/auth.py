@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import AfterValidator, BaseModel, EmailStr, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.security import BCRYPT_MAX_PASSWORD_BYTES
 from app.schemas.user import UserRead
@@ -23,6 +23,21 @@ NormalizedEmail = Annotated[EmailStr, AfterValidator(str.lower)]
 
 
 class RegisterRequest(BaseModel):
+    # json_schema_extra["examples"]: el cuerpo de ejemplo que Swagger UI deja
+    # precargado en "Try it out". Tiene que ser un ejemplo que FUNCIONE (por
+    # eso la contrasena mezcla letras y numeros).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "email": "nuevo.usuario@example.com",
+                    "password": "Clave12345",
+                    "full_name": "Nuevo Usuario",
+                }
+            ]
+        }
+    )
+
     email: NormalizedEmail
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
@@ -50,15 +65,31 @@ class RegisterResponse(BaseModel):
 
 
 class VerifyRequest(BaseModel):
+    # El codigo de ejemplo es de relleno: el real esta en ./outbox/ (modo dev).
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"email": "nuevo.usuario@example.com", "code": "123456"}]}
+    )
+
     email: NormalizedEmail
     code: str = Field(min_length=4, max_length=10)
 
 
 class ResendVerificationRequest(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"email": "nuevo.usuario@example.com"}]}
+    )
+
     email: NormalizedEmail
 
 
 class LoginRequest(BaseModel):
+    # Usuario sembrado por el seeder (ver el README): sirve de inmediato.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"email": "maria.torres@example.com", "password": "Password123!"}]
+        }
+    )
+
     email: NormalizedEmail
     password: str
 
