@@ -15,6 +15,7 @@ from sqlmodel import Session
 from app.core.database import get_session
 from app.core.dependencies import CurrentUser, OptionalCurrentUser
 from app.schemas.cart import AddCartItemRequest, CartItemRead, CartRead
+from app.schemas.errors import errors
 from app.services import cart_service
 from app.services.cart_service import CartView
 
@@ -24,7 +25,17 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # alias="X-Cart-Token": el nombre del header no sigue la convencion
 # snake_case de Python, por eso se declara explicito en vez de dejar que
 # FastAPI lo derive del nombre del parametro (que seria "X_Cart_Token").
-CartTokenHeader = Annotated[str | None, Header(alias="X-Cart-Token")]
+CartTokenHeader = Annotated[
+    str | None,
+    Header(
+        alias="X-Cart-Token",
+        description=(
+            "Token del carrito de **invitado**. La primera vez no lo mandes: `POST /cart/items` "
+            "crea el carrito y lo devuelve en `cart_token`; guardalo y enviarlo en las llamadas "
+            "siguientes. Con sesion iniciada no hace falta (el carrito sale del JWT)."
+        ),
+    ),
+]
 
 # Autenticacion OPCIONAL en OpenAPI. FastAPI ya publica `security:
 # [{"HTTPBearer": []}]` (el JWT) para estas rutas, lo que en /docs se lee como
@@ -35,9 +46,15 @@ CartTokenHeader = Annotated[str | None, Header(alias="X-Cart-Token")]
 # JWT presente pero invalido sigue rechazandose con 401 (ver
 # get_optional_current_user).
 OPTIONAL_AUTH = {"security": [{}]}
-_INVALID_TOKEN_RESPONSE = {
-    401: {"description": "Se envio un JWT, pero es invalido, expiro o la sesion fue cerrada."}
-}
+_INVALID_TOKEN_RESPONSE = errors(
+    (401, "Se envio un JWT, pero es invalido, expiro o la sesion fue cerrada.")
+)
+# Texto comun: explica el doble modo (invitado / con sesion) de estas rutas.
+_GUEST_NOTE = (
+    "\n\n**Auth opcional:** funciona como invitado (cabecera `X-Cart-Token`) o con sesion "
+    "(Authorize). Para probar como invitado, pulsa Authorize -> Logout. Un JWT presente pero "
+    "invalido se rechaza con `401` (no se trata como invitado)."
+)
 
 
 def _to_read(view: CartView) -> CartRead:
@@ -70,7 +87,15 @@ def _to_read(view: CartView) -> CartRead:
 # current_user usa OptionalCurrentUser (no CurrentUser): esta ruta funciona
 # tanto logueado como sin loguearse.
 @router.get(
-    "", response_model=CartRead, openapi_extra=OPTIONAL_AUTH, responses=_INVALID_TOKEN_RESPONSE
+    "",
+    response_model=CartRead,
+    summary="Ver el carrito",
+    description=(
+        "Devuelve el carrito actual con precios y descuentos recalculados por el servidor. "
+        "Nunca crea un carrito: si no hay ninguno, responde uno vacio." + _GUEST_NOTE
+    ),
+    openapi_extra=OPTIONAL_AUTH,
+    responses=_INVALID_TOKEN_RESPONSE | errors(422),
 )
 def get_cart(
     session: SessionDep, current_user: OptionalCurrentUser, x_cart_token: CartTokenHeader = None
@@ -86,8 +111,14 @@ def get_cart(
     "/items",
     response_model=CartRead,
     status_code=status.HTTP_201_CREATED,
+    summary="Agregar un juego al carrito",
+    description=(
+        "Agrega el juego (si ya estaba, no lo duplica). Un invitado sin `X-Cart-Token` recibe "
+        "uno nuevo en el campo `cart_token` de la respuesta: **guardalo**." + _GUEST_NOTE
+    ),
     openapi_extra=OPTIONAL_AUTH,
-    responses=_INVALID_TOKEN_RESPONSE,
+    responses=_INVALID_TOKEN_RESPONSE
+    | errors((404, "El juego no existe o no esta a la venta."), 422),
 )
 def add_item(
     payload: AddCartItemRequest,
@@ -105,8 +136,10 @@ def add_item(
 @router.delete(
     "/items/{game_id}",
     response_model=CartRead,
+    summary="Quitar un juego del carrito",
+    description="Quita el juego indicado y devuelve el carrito actualizado." + _GUEST_NOTE,
     openapi_extra=OPTIONAL_AUTH,
-    responses=_INVALID_TOKEN_RESPONSE,
+    responses=_INVALID_TOKEN_RESPONSE | errors(422),
 )
 def remove_item(
     game_id: int,
@@ -125,8 +158,10 @@ def remove_item(
 @router.delete(
     "",
     status_code=status.HTTP_204_NO_CONTENT,
+    summary="Vaciar el carrito",
+    description="Quita todos los juegos del carrito. No devuelve cuerpo." + _GUEST_NOTE,
     openapi_extra=OPTIONAL_AUTH,
-    responses=_INVALID_TOKEN_RESPONSE,
+    responses=_INVALID_TOKEN_RESPONSE | errors(422),
 )
 def clear_cart(
     session: SessionDep, current_user: OptionalCurrentUser, x_cart_token: CartTokenHeader = None
@@ -139,7 +174,17 @@ def clear_cart(
 # (CurrentUser, no OptionalCurrentUser): no tiene sentido "fusionar" sin un
 # destino — pensado para que el cliente lo llame justo despues de POST
 # /auth/login, mandando el token de invitado que venia usando.
-@router.post("/merge", response_model=CartRead)
+@router.post(
+    "/merge",
+    response_model=CartRead,
+    summary="Fusionar el carrito de invitado con mi cuenta",
+    description=(
+        "Pasa los juegos del carrito de invitado (`X-Cart-Token`) al carrito del usuario. "
+        "Llamalo justo despues de `POST /auth/login`. **Exige sesion** (a diferencia del "
+        "resto de `/cart`). No filtra juegos ya comprados: eso lo valida el checkout."
+    ),
+    responses=errors(401, 403, 422),
+)
 def merge_cart(
     session: SessionDep, current_user: CurrentUser, x_cart_token: CartTokenHeader = None
 ) -> CartRead:

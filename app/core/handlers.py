@@ -119,8 +119,16 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONRe
         path=request.url.path,
         client_ip=request.client.host if request.client else None,
     )
+    # Retry-After: la ventana del limite por IP es de 1 minuto ("5/minute" en
+    # RATE_LIMIT_AUTH), asi que 60 s es un tope razonable para decirle al
+    # cliente cuanto esperar (el bloqueo por CUENTA de /auth/verify calcula el
+    # suyo aparte, en auth_service).
     return _error_response(
-        429, "rate_limited", "Demasiadas solicitudes. Intenta de nuevo mas tarde.", request
+        429,
+        "rate_limited",
+        "Demasiadas solicitudes. Intenta de nuevo mas tarde.",
+        request,
+        extra_headers={"Retry-After": "60"},
     )
 
 

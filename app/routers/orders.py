@@ -14,6 +14,7 @@ from sqlmodel import Session
 from app.core.database import get_session
 from app.core.dependencies import CurrentUser
 from app.models import Order, OrderItem
+from app.schemas.errors import errors
 from app.schemas.order import OrderDetail, OrderItemRead, OrderPage, OrderSummary
 from app.services import order_service
 
@@ -44,12 +45,43 @@ def _to_detail(order: Order, items: list[OrderItem]) -> OrderDetail:
 # checkout"): FastAPI ya responde 422 solo si falta, porque el parametro no
 # tiene default. La generacion de la boleta PDF y el correo de confirmacion
 # corren DESPUES de responder (BackgroundTasks), sin bloquear al cliente.
-@router.post("/checkout", response_model=OrderDetail, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/checkout",
+    response_model=OrderDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Comprar el carrito (checkout)",
+    description=(
+        "Convierte el carrito en una orden pagada y agrega los juegos a tu biblioteca. "
+        "Precios y ofertas se recalculan en el servidor.\n\n"
+        "**`Idempotency-Key` (obligatoria):** inventa un texto unico por intento de compra "
+        "(p. ej. un UUID). Si la peticion se repite con la **misma** clave (reintento por "
+        "un corte de red, doble clic), recibes la misma orden y no se cobra dos veces.\n\n"
+        "**Boleta:** el PDF y el correo se generan **en segundo plano**, despues de responder. "
+        "Si pides `GET /orders/{order_code}/receipt` enseguida puede dar `404` hasta que termine."
+    ),
+    responses=errors(
+        401,
+        403,
+        (
+            409,
+            "Un juego del carrito ya esta en tu biblioteca o ya no esta a la venta, o "
+            "se uso una clave distinta sobre un carrito que otro checkout esta comprando.",
+        ),
+        (422, "Falta la cabecera `Idempotency-Key` o el carrito esta vacio."),
+    ),
+)
 def checkout(
     session: SessionDep,
     current_user: CurrentUser,
     background_tasks: BackgroundTasks,
-    idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias="Idempotency-Key",
+            description="Clave unica por intento de compra, p. ej. un UUID.",
+            examples=["4d1b8c1e-6f0a-4a39-9d0e-2a5b7f3c9e11"],
+        ),
+    ],
 ) -> OrderDetail:
     order, items = order_service.checkout(
         session, user=current_user, idempotency_key=idempotency_key
@@ -63,7 +95,13 @@ def checkout(
 
 
 # GET /orders — historial paginado del usuario logueado.
-@router.get("", response_model=OrderPage)
+@router.get(
+    "",
+    response_model=OrderPage,
+    summary="Ver mi historial de compras",
+    description="Tus ordenes, paginadas, de la mas nueva a la mas antigua.",
+    responses=errors(401, 403, 422),
+)
 def list_orders(
     session: SessionDep,
     current_user: CurrentUser,
@@ -85,7 +123,17 @@ def list_orders(
 # GET /orders/{order_code} — detalle de una orden puntual, con sus items.
 # Pedir la orden de OTRO usuario responde 404 (ver
 # order_service.get_order_detail -> ensure_owner_or_admin).
-@router.get("/{order_code}", response_model=OrderDetail)
+@router.get(
+    "/{order_code}",
+    response_model=OrderDetail,
+    summary="Ver el detalle de una orden",
+    description=(
+        "Orden con sus items (con el precio congelado al comprar). `order_code` es de la forma "
+        "`GV-YYYYMMDD-XXXXXXXX`. La orden de **otro usuario** responde `404`, no `403` "
+        "(un `403` confirmaria que existe)."
+    ),
+    responses=errors(401, 403, (404, "La orden no existe o es de otro usuario."), 422),
+)
 def get_order(order_code: str, session: SessionDep, current_user: CurrentUser) -> OrderDetail:
     order, items = order_service.get_order_detail(
         session, current_user=current_user, order_code=order_code
@@ -98,6 +146,12 @@ def get_order(order_code: str, session: SessionDep, current_user: CurrentUser) -
 # checkout aun no termino de generarla (ver order_service.get_receipt_path).
 @router.get(
     "/{order_code}/receipt",
+    summary="Descargar la boleta en PDF",
+    description=(
+        "Descarga la boleta de la orden (`application/pdf`). Se genera en segundo plano "
+        "despues del checkout: si todavia no esta lista responde `404`; reintenta en unos "
+        "segundos. En Swagger UI aparece un enlace **Download file**."
+    ),
     # response_class=FileResponse: sin esto FastAPI documenta el 200 como
     # JSON (el tipo por defecto). FileResponse no fija un media_type, asi
     # que el 200 se describe solo con el bloque `responses` de abajo.
@@ -114,14 +168,17 @@ def get_order(order_code: str, session: SessionDep, current_user: CurrentUser) -
                 }
             },
         },
-        401: {"description": "Falta el token, es invalido o la sesion fue cerrada."},
-        403: {"description": "La cuenta esta suspendida."},
-        404: {
-            "description": (
+        # El resto de errores salen del helper (mismo sobre de error de la API).
+        **errors(
+            401,
+            403,
+            (
+                404,
                 "La orden no existe, es de otro usuario, o la boleta todavia se esta "
-                "generando en segundo plano."
-            )
-        },
+                "generando en segundo plano.",
+            ),
+            422,
+        ),
     },
 )
 def get_receipt(order_code: str, session: SessionDep, current_user: CurrentUser) -> FileResponse:

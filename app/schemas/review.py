@@ -9,10 +9,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ReviewCreate(BaseModel):
+    # Ejemplo precargado en Swagger.
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"rating": 5, "comment": "Excelente juego, lo recomiendo."}]
+        }
+    )
+
     # Puntaje de 1 a 5: Field(ge=1, le=5) hace que FastAPI responda 422
     # solo, sin codigo extra, si llega un 0 o un 6.
     rating: int = Field(ge=1, le=5)
@@ -22,6 +29,11 @@ class ReviewCreate(BaseModel):
 
 
 class ReviewUpdate(BaseModel):
+    # Ejemplo precargado en Swagger.
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"rating": 4, "comment": "Mejor de lo que esperaba."}]}
+    )
+
     """PATCH body: every field optional. Which ones the client actually sent
     is read with `model_dump(exclude_unset=True)` in the service, so an
     omitted field stays untouched while an explicit `"comment": null`

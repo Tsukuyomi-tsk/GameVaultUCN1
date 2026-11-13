@@ -35,7 +35,15 @@ from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
-_bearer_scheme = HTTPBearer(auto_error=False)
+# description/bearerFormat: es lo que muestra el dialogo "Authorize" de /docs.
+_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    bearerFormat="JWT",
+    description=(
+        "Pega aqui el `access_token` que devuelve `POST /auth/login` "
+        "(solo el token, sin escribir la palabra `Bearer`)."
+    ),
+)
 
 
 def _log_denied(reason: str, **fields: object) -> None:

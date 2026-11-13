@@ -17,6 +17,21 @@ from app.schemas.base import PatchSchema
 
 
 class OfferCreate(BaseModel):
+    # Ejemplo valido: el fin es posterior al inicio y la ventana es lejana (no choca con la demo).
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "game_id": 1,
+                    "discount_percent": 30,
+                    "starts_at": "2030-01-01T00:00:00Z",
+                    "ends_at": "2030-01-31T23:59:59Z",
+                    "is_active": True,
+                }
+            ]
+        }
+    )
+
     # A que juego pertenece la oferta — se manda explicito en el body (no
     # viene de la URL) porque el endpoint es POST /admin/offers, uno solo
     # para todos los juegos, no uno por juego.
@@ -60,6 +75,9 @@ class OfferUpdate(PatchSchema):
     existing offer) before re-validating order and overlap — a partial
     body alone can't tell if the resulting window still makes sense.
     """
+
+    # Ejemplo: un PATCH manda solo lo que cambia.
+    model_config = ConfigDict(json_schema_extra={"examples": [{"discount_percent": 40}]})
 
     # Las 4 columnas son NOT NULL: un null explicito se rechaza con 422.
     non_nullable = frozenset({"discount_percent", "starts_at", "ends_at", "is_active"})

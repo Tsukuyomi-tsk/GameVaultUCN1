@@ -15,16 +15,23 @@ from app.core.database import get_session
 from app.core.dependencies import AdminUser
 from app.models.enums import UserRole
 from app.schemas.admin_user import AdminUserRead, SuspendUserRequest, UserPage
+from app.schemas.errors import ADMIN_RESPONSES, errors
 from app.services import admin_user_service
 
-router = APIRouter(prefix="/admin/users", tags=["admin-users"])
+router = APIRouter(prefix="/admin/users", tags=["admin-users"], responses=ADMIN_RESPONSES)
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
 
 # GET /admin/users — listado paginado, con filtros opcionales de rol y
 # estado de suspension.
-@router.get("", response_model=UserPage)
+@router.get(
+    "",
+    response_model=UserPage,
+    summary="Listar usuarios",
+    description="Listado paginado de usuarios, con filtros opcionales por `role` y `is_suspended`.",
+    responses=errors(422),
+)
 def list_users(
     session: SessionDep,
     _admin: AdminUser,
@@ -46,7 +53,20 @@ def list_users(
 
 
 # PATCH /admin/users/{user_id}/suspend — suspende una cuenta.
-@router.patch("/{user_id}/suspend", response_model=AdminUserRead)
+@router.patch(
+    "/{user_id}/suspend",
+    response_model=AdminUserRead,
+    summary="Suspender una cuenta",
+    description=(
+        "Suspende la cuenta con un motivo. Tiene efecto inmediato, tambien sobre tokens "
+        "ya emitidos (reciben `403`). Un admin no puede suspenderse a si mismo."
+    ),
+    responses=errors(
+        (404, "El usuario no existe."),
+        (409, "Intentaste suspender tu propia cuenta."),
+        (422, "Falta el motivo o esta vacio."),
+    ),
+)
 def suspend_user(
     user_id: int,
     payload: SuspendUserRequest,
@@ -64,7 +84,13 @@ def suspend_user(
 
 
 # PATCH /admin/users/{user_id}/reactivate — revierte una suspension.
-@router.patch("/{user_id}/reactivate", response_model=AdminUserRead)
+@router.patch(
+    "/{user_id}/reactivate",
+    response_model=AdminUserRead,
+    summary="Reactivar una cuenta",
+    description="Levanta la suspension de la cuenta.",
+    responses=errors((404, "El usuario no existe."), 422),
+)
 def reactivate_user(user_id: int, session: SessionDep, _admin: AdminUser) -> AdminUserRead:
     user = admin_user_service.reactivate_user(session, user_id=user_id)
     return AdminUserRead.model_validate(user)
