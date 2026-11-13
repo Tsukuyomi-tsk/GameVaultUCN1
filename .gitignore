@@ -1,0 +1,39 @@
+# Entorno virtual
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Variables de entorno y secretos
+.env
+.env.local
+
+# Base de datos
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Archivos generados en tiempo de ejecución
+media/
+outbox/
+receipts/
+logs/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Contexto local para agentes (no se entrega como parte del trabajo)
+CLAUDE.md
+
+# Material de clase del profesor (no es parte del entregable del taller)
+docs/clases/
+
+# Ruff / mypy cache
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
